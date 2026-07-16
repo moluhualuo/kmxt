@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#176b4d">
+  <title>授权套餐</title>
+  <link rel="icon" href="/admin/assets/brand.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/admin/styles.css">
+  <link rel="stylesheet" href="/admin/store.css">
+</head>
+<body class="store-body">
+  <a class="skip-link" href="#store-main">跳到主要内容</a>
+  <header class="store-header">
+    <div class="store-header-inner">
+      <a class="store-brand" href="#products" aria-label="返回套餐列表">
+        <img src="/admin/assets/brand.svg" width="38" height="38" alt="">
+        <span><strong id="store-name">授权店铺</strong><small id="store-code">KMXT</small></span>
+      </a>
+      <nav class="store-tabs" aria-label="店铺导航">
+        <button class="store-tab active" type="button" data-store-view="products">选择套餐</button>
+        <button class="store-tab" type="button" data-store-view="orders">订单查询</button>
+      </nav>
+    </div>
+  </header>
+  <main class="store-main" id="store-main">
+    <div id="store-app" aria-live="polite">
+      <div class="store-loading"><span class="boot-spinner" aria-hidden="true"></span><span>正在加载</span></div>
+    </div>
+  </main>
+  <div id="toast-region" class="toast-region" aria-live="assertive" aria-atomic="true"></div>
+  <script type="module" src="/admin/js/store.js"></script>
+</body>
+</html>

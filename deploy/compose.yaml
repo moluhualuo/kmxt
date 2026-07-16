@@ -1,0 +1,109 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: kmxt-license-server:0.5.2
+    restart: unless-stopped
+    env_file: ./production.env
+    ports:
+      - "127.0.0.1:8082:8080"
+    secrets:
+      - kmxt_root_secret
+      - source: mysql_local_password
+        target: kmxt_mysql_password
+      - kmxt_redis_password
+      - kmxt_admin_password
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      kmxt:
+        ipv4_address: 172.28.52.10
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  mysql:
+    # Author: 花落. MIT License. Database traffic stays on the private Compose network.
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: kamxt1
+      MYSQL_USER: kmxt
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_local_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_local_root_password
+    secrets:
+      - mysql_local_password
+      - mysql_local_root_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      kmxt:
+        ipv4_address: 172.28.52.30
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$(cat /run/secrets/mysql_local_root_password)\" mysqladmin ping --host=127.0.0.1 --user=root --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  redis:
+    profiles: ["local-redis"]
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "exec redis-server --appendonly yes --appendfsync everysec --requirepass \"$$(cat /run/secrets/kmxt_redis_password)\""]
+    secrets:
+      - kmxt_redis_password
+    volumes:
+      - redis-data:/data
+    networks:
+      kmxt:
+        ipv4_address: 172.28.52.20
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/kmxt_redis_password)\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kmxt:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.52.0/24
+          gateway: 172.28.52.1
+
+volumes:
+  mysql-data:
+  redis-data:
+
+secrets:
+  kmxt_root_secret:
+    file: ./secrets/root_secret
+  mysql_local_password:
+    file: ./secrets/mysql_local_password
+  mysql_local_root_password:
+    file: ./secrets/mysql_local_root_password
+  kmxt_redis_password:
+    file: ./secrets/redis_password
+  kmxt_admin_password:
+    file: ./secrets/admin_password

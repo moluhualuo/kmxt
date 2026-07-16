@@ -1,0 +1,9 @@
+.git
+.runtime
+data
+deploy/secrets
+node_modules
+npm-debug.log
+test
+sdk
+docs

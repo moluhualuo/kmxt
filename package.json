@@ -1,0 +1,22 @@
+{
+  "name": "kmxt-license-server",
+  "version": "0.5.2",
+  "description": "Multi-tenant license key verification service",
+  "type": "module",
+  "private": true,
+  "author": "花落",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "cli": "node cli/kmxt.js",
+    "test": "node --test",
+    "check": "node --check src/server.js && node --check cli/kmxt.js && node --check public/js/api.js && node --check public/js/state.js && node --check public/js/components.js && node --check public/js/app.js && node --check public/js/store.js"
+  },
+  "dependencies": {
+    "mysql2": "^3.14.2",
+    "redis": "^5.5.6"
+  }
+}

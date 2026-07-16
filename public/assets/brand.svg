@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">KMXT</title>
+  <rect width="64" height="64" rx="8" fill="#176b4d"/>
+  <path d="M17 18v28M17 33l13-15M19 31l13 15M36 18v28M36 19l11 14 11-14M58 18v28" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

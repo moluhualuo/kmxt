@@ -1,0 +1,269 @@
+import { randomUUID } from 'node:crypto';
+import { AppError } from '../core/app-error.js';
+import { optionalString, requireString } from '../core/validation.js';
+import {
+  createOpaqueToken,
+  createSignedEnvelope,
+  decryptText,
+  digestSecret,
+  normalizeLicenseKey,
+} from '../security/crypto.js';
+import { ReplayGuard } from '../security/replay-guard.js';
+import {
+  findApplicationOrThrow,
+  findMerchantOrThrow,
+} from './access-control.js';
+
+function ensureLicenseUsable(license, now) {
+  if (license.status === 'disabled') {
+    throw new AppError('LICENSE_DISABLED', 'License is disabled', 403);
+  }
+  if (license.status === 'expired' || (license.expiresAt && Date.parse(license.expiresAt) <= now)) {
+    throw new AppError('LICENSE_EXPIRED', 'License has expired', 403);
+  }
+}
+
+function appendVerificationLog(state, entry) {
+  state.verificationLogs.push({
+    id: randomUUID(),
+    merchantId: entry.merchantId,
+    appId: entry.appId,
+    licenseId: entry.licenseId,
+    bindingId: entry.bindingId,
+    event: entry.event,
+    resultCode: entry.resultCode,
+    clientVersion: entry.clientVersion,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+export class VerificationService {
+  constructor(store, rootSecret, config, securityState) {
+    this.store = store;
+    this.rootSecret = rootSecret;
+    this.config = config;
+    this.replayGuard = new ReplayGuard(config.clockSkewSeconds, securityState);
+  }
+
+  async activate(input) {
+    const appId = requireString(input.appId, 'appId', { min: 36, max: 36 });
+    const licenseKey = requireString(input.licenseKey, 'licenseKey', { min: 20, max: 128 });
+    const deviceId = requireString(input.deviceId, 'deviceId', { min: 8, max: 256, normalize: false });
+    const deviceLabel = optionalString(input.deviceLabel, 'deviceLabel', { min: 1, max: 100 });
+    const clientVersion = optionalString(input.clientVersion, 'clientVersion', { min: 1, max: 50 });
+    const appSnapshot = await this.#getActiveApplication(appId);
+    await this.replayGuard.assertFresh(`activate:${appId}`, input.timestamp, input.nonce);
+
+    const nowMilliseconds = Date.now();
+    const now = new Date(nowMilliseconds).toISOString();
+    const licenseDigest = digestSecret(
+      this.rootSecret,
+      'license-key',
+      normalizeLicenseKey(licenseKey),
+    );
+    const deviceDigest = digestSecret(this.rootSecret, `device:${appId}`, deviceId);
+    const sessionToken = createOpaqueToken();
+    const sessionDigest = digestSecret(this.rootSecret, 'client-session', sessionToken);
+
+    const activation = await this.store.transaction((state) => {
+      const application = findApplicationOrThrow(state, appId, { requireActive: true });
+      findMerchantOrThrow(state, application.merchantId, { requireActive: true });
+      const license = state.licenses.find(
+        (item) => item.appId === appId && item.keyDigest === licenseDigest,
+      );
+      if (!license) {
+        throw new AppError('LICENSE_INVALID', 'License key is invalid for this application', 401);
+      }
+      ensureLicenseUsable(license, nowMilliseconds);
+
+      if (!license.activatedAt) {
+        license.activatedAt = now;
+        if (license.durationDays) {
+          license.expiresAt = new Date(
+            nowMilliseconds + license.durationDays * 24 * 60 * 60 * 1000,
+          ).toISOString();
+        }
+        license.status = 'active';
+        license.updatedAt = now;
+      }
+      ensureLicenseUsable(license, nowMilliseconds);
+
+      let binding = state.deviceBindings.find(
+        (item) => item.licenseId === license.id
+          && item.deviceDigest === deviceDigest
+          && item.status === 'active',
+      );
+      if (!binding) {
+        const activeBindings = state.deviceBindings.filter(
+          (item) => item.licenseId === license.id && item.status === 'active',
+        );
+        if (license.maxDevices > 0 && activeBindings.length >= license.maxDevices) {
+          throw new AppError('DEVICE_LIMIT_REACHED', 'License device limit has been reached', 409);
+        }
+        binding = {
+          id: randomUUID(),
+          merchantId: license.merchantId,
+          appId,
+          licenseId: license.id,
+          deviceDigest,
+          deviceLabel,
+          status: 'active',
+          boundAt: now,
+          lastVerifiedAt: now,
+          revokedAt: null,
+          updatedAt: now,
+        };
+        state.deviceBindings.push(binding);
+      } else {
+        binding.lastVerifiedAt = now;
+        binding.deviceLabel = deviceLabel || binding.deviceLabel;
+        binding.updatedAt = now;
+      }
+
+      const sessionExpiresAt = new Date(Math.min(
+        nowMilliseconds + this.config.clientSessionTtlSeconds * 1000,
+        Date.parse(license.expiresAt),
+      )).toISOString();
+      state.clientSessions = state.clientSessions.filter(
+        (session) => Date.parse(session.expiresAt) > nowMilliseconds,
+      );
+      state.clientSessions.push({
+        id: randomUUID(),
+        merchantId: license.merchantId,
+        appId,
+        licenseId: license.id,
+        bindingId: binding.id,
+        tokenDigest: sessionDigest,
+        createdAt: now,
+        expiresAt: sessionExpiresAt,
+        lastVerifiedAt: now,
+      });
+      appendVerificationLog(state, {
+        merchantId: license.merchantId,
+        appId,
+        licenseId: license.id,
+        bindingId: binding.id,
+        event: 'activate',
+        resultCode: 'LICENSE_VALID',
+        clientVersion,
+      });
+      return {
+        application,
+        licenseId: license.id,
+        bindingId: binding.id,
+        licenseExpiresAt: license.expiresAt,
+        sessionExpiresAt,
+      };
+    });
+
+    return this.#sign(activation.application, {
+      licensed: true,
+      code: 'LICENSE_VALID',
+      appId,
+      licenseId: activation.licenseId,
+      bindingId: activation.bindingId,
+      sessionToken,
+      issuedAt: now,
+      licenseExpiresAt: activation.licenseExpiresAt,
+      sessionExpiresAt: activation.sessionExpiresAt,
+      heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds,
+      offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
+    });
+  }
+
+  async verify(input) {
+    const appId = requireString(input.appId, 'appId', { min: 36, max: 36 });
+    const sessionToken = requireString(input.sessionToken, 'sessionToken', {
+      min: 32,
+      max: 128,
+      normalize: false,
+    });
+    const deviceId = requireString(input.deviceId, 'deviceId', { min: 8, max: 256, normalize: false });
+    const clientVersion = optionalString(input.clientVersion, 'clientVersion', { min: 1, max: 50 });
+    const appSnapshot = await this.#getActiveApplication(appId);
+    await this.replayGuard.assertFresh(`verify:${appId}`, input.timestamp, input.nonce);
+
+    const nowMilliseconds = Date.now();
+    const now = new Date(nowMilliseconds).toISOString();
+    const sessionDigest = digestSecret(this.rootSecret, 'client-session', sessionToken);
+    const deviceDigest = digestSecret(this.rootSecret, `device:${appId}`, deviceId);
+
+    const verification = await this.store.transaction((state) => {
+      const application = findApplicationOrThrow(state, appId, { requireActive: true });
+      findMerchantOrThrow(state, application.merchantId, { requireActive: true });
+      const session = state.clientSessions.find(
+        (item) => item.appId === appId && item.tokenDigest === sessionDigest,
+      );
+      if (!session || Date.parse(session.expiresAt) <= nowMilliseconds) {
+        throw new AppError('SESSION_EXPIRED', 'Verification session is invalid or expired', 401);
+      }
+      const license = state.licenses.find((item) => item.id === session.licenseId);
+      if (!license) {
+        throw new AppError('LICENSE_INVALID', 'License is unavailable', 401);
+      }
+      ensureLicenseUsable(license, nowMilliseconds);
+      const binding = state.deviceBindings.find(
+        (item) => item.id === session.bindingId
+          && item.deviceDigest === deviceDigest
+          && item.status === 'active',
+      );
+      if (!binding) {
+        throw new AppError('DEVICE_MISMATCH', 'The verification device does not match the binding', 401);
+      }
+
+      binding.lastVerifiedAt = now;
+      binding.updatedAt = now;
+      session.lastVerifiedAt = now;
+      session.expiresAt = new Date(Math.min(
+        nowMilliseconds + this.config.clientSessionTtlSeconds * 1000,
+        Date.parse(license.expiresAt),
+      )).toISOString();
+      appendVerificationLog(state, {
+        merchantId: license.merchantId,
+        appId,
+        licenseId: license.id,
+        bindingId: binding.id,
+        event: 'verify',
+        resultCode: 'LICENSE_VALID',
+        clientVersion,
+      });
+      return {
+        application,
+        licenseId: license.id,
+        bindingId: binding.id,
+        licenseExpiresAt: license.expiresAt,
+        sessionExpiresAt: session.expiresAt,
+      };
+    });
+
+    return this.#sign(verification.application, {
+      licensed: true,
+      code: 'LICENSE_VALID',
+      appId,
+      licenseId: verification.licenseId,
+      bindingId: verification.bindingId,
+      issuedAt: now,
+      licenseExpiresAt: verification.licenseExpiresAt,
+      sessionExpiresAt: verification.sessionExpiresAt,
+      heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds,
+      offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
+    });
+  }
+
+  async #getActiveApplication(appId) {
+    return this.store.read((state) => {
+      const application = findApplicationOrThrow(state, appId, { requireActive: true });
+      findMerchantOrThrow(state, application.merchantId, { requireActive: true });
+      return application;
+    });
+  }
+
+  #sign(application, payload) {
+    const privateKey = decryptText(
+      this.rootSecret,
+      `app-signing:${application.id}`,
+      application.signingPrivateKeyEncrypted,
+    );
+    return createSignedEnvelope(payload, privateKey, application.signingKeyId);
+  }
+}
