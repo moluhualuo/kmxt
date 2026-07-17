@@ -1,7 +1,16 @@
-import { AppError } from '../core/app-error.js';
 import { assertStateShape, createInitialState } from './schema.js';
 import { mysqlConnectionOptions, runMigrations } from './migrate.js';
 import { StateStore } from './store.js';
+import { MysqlDashboardRepository } from './repositories/mysql-dashboard-repository.js';
+import { MysqlOrderRepository } from './repositories/mysql-order-repository.js';
+import { MysqlVerificationRepository } from './repositories/mysql-verification-repository.js';
+import { MysqlLicenseRepository } from './repositories/mysql-license-repository.js';
+import { MysqlAuthRepository } from './repositories/mysql-auth-repository.js';
+import { MysqlMerchantRepository } from './repositories/mysql-merchant-repository.js';
+import { MysqlApplicationRepository } from './repositories/mysql-application-repository.js';
+import { MysqlProductRepository } from './repositories/mysql-product-repository.js';
+import { MysqlAuditRepository } from './repositories/mysql-audit-repository.js';
+import { MysqlMaintenanceRepository } from './repositories/mysql-maintenance-repository.js';
 
 const TABLES = [
   ['merchants', 'merchants'],
@@ -18,12 +27,6 @@ const TABLES = [
   ['verificationLogs', 'verification_logs'],
 ];
 
-// Author: 花落. Some managed MySQL providers stall a large UNION ALL over JSON payloads.
-const STATE_ROW_QUERIES = TABLES.map(([collection, table]) => ({
-  collection,
-  sql: `SELECT id, payload FROM ${table}`,
-}));
-
 const COLUMN_VALUES = {
   merchants: (item) => ({ code: item.code, status: item.status, created_at: item.createdAt }),
   users: (item) => ({ merchant_id: item.merchantId, username_normalized: item.usernameNormalized, role: item.role, status: item.status, created_at: item.createdAt }),
@@ -39,217 +42,103 @@ const COLUMN_VALUES = {
   verification_logs: (item) => ({ merchant_id: item.merchantId, app_id: item.appId, license_id: item.licenseId, binding_id: item.bindingId, event: item.event, result_code: item.resultCode, created_at: item.createdAt }),
 };
 
-const TRANSIENT_MYSQL_CODES = new Set([
-  'ECONNABORTED',
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'EPIPE',
-  'ETIMEDOUT',
-  'ER_CON_COUNT_ERROR',
-  'KMXT_MYSQL_TIMEOUT',
-  'PROTOCOL_CONNECTION_LOST',
-  'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR',
-  'PROTOCOL_SEQUENCE_TIMEOUT',
-]);
-
 function clone(value) { return structuredClone(value); }
 function jsonPayload(item) { return JSON.stringify(item); }
 function parsePayload(value) { return typeof value === 'string' ? JSON.parse(value) : value; }
+function samePayload(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
 function toIso(value) {
   if (value instanceof Date) return value.toISOString();
   const normalized = String(value).replace(' ', 'T');
   return normalized.endsWith('Z') ? normalized : `${normalized}Z`;
 }
 
-function isTransientMysqlError(error) {
-  return Boolean(error?.fatal) || TRANSIENT_MYSQL_CODES.has(error?.code);
-}
-
-function mysqlTimeoutError(operation) {
-  const error = new Error(`MySQL ${operation} exceeded the configured timeout`);
-  error.code = 'KMXT_MYSQL_TIMEOUT';
-  error.fatal = true;
-  return error;
-}
-
-// MySQL writes serialize on the singleton metadata row. InnoDB owns the lock lifetime, so a
-// pooled connection cannot leak a user-level advisory lock after commit, rollback, or disconnect.
+// Author: 花落. MySQL persistence is distributed under the MIT License.
+// Legacy StateStore transactions use SERIALIZABLE row/range locks until every service has
+// moved to its domain repository. There is intentionally no connection-scoped advisory lock.
 export class MysqlStore extends StateStore {
   constructor(config) {
     super();
     this.config = config;
     this.pool = null;
-    this.transactionTail = Promise.resolve();
-    this.operationTimeoutMs = config.mysql?.operationTimeoutMs ?? 8_000;
+    this.repositories = null;
   }
 
   async initialize() {
     if (this.config.mysql.autoMigrate) await runMigrations(this.config);
     const mysql = await import('mysql2/promise');
-    const connectionLimit = this.config.mysql.poolLimit;
     this.pool = mysql.createPool({
       ...await mysqlConnectionOptions(this.config),
-      connectionLimit,
-      maxIdle: Math.min(this.config.mysql.maxIdle ?? 1, connectionLimit),
-      idleTimeout: this.config.mysql.idleTimeoutMs ?? 60_000,
+      connectionLimit: this.config.mysql.poolLimit,
       waitForConnections: true,
       queueLimit: 0,
       enableKeepAlive: true,
     });
-    await this.pool.query({ sql: 'SELECT 1', timeout: this.operationTimeoutMs });
-    await this.read((state) => state.schemaVersion);
+    await this.pool.query('SELECT 1');
+    this.repositories = {
+      dashboard: new MysqlDashboardRepository(this.pool),
+      orders: new MysqlOrderRepository(this.pool),
+      verification: new MysqlVerificationRepository(this.pool),
+      licenses: new MysqlLicenseRepository(this.pool),
+      auth: new MysqlAuthRepository(this.pool),
+      merchants: new MysqlMerchantRepository(this.pool),
+      applications: new MysqlApplicationRepository(this.pool),
+      products: new MysqlProductRepository(this.pool),
+      audit: new MysqlAuditRepository(this.pool),
+      maintenance: new MysqlMaintenanceRepository(this.pool),
+    };
+    const [metaRows] = await this.pool.query('SELECT schema_version FROM kmxt_meta WHERE singleton_id = 1');
+    if (!metaRows.length) throw new Error('MySQL schema is not initialized; run `node cli/kmxt.js migrate`');
     return this;
   }
 
   async read(selector = (state) => state) {
-    return this.#withDatabaseTransaction(async (connection) => {
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
       const state = await this.#load(connection, false);
       const result = await selector(clone(state));
+      await connection.commit();
       return clone(result);
-    });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   }
 
   async transaction(mutator) {
-    return this.#runTransactionExclusive(() => this.#withDatabaseTransaction(async (connection) => {
-        const original = await this.#load(connection, true);
-        const draft = clone(original);
-        const result = await mutator(draft);
-        draft.meta.updatedAt = new Date().toISOString();
-        assertStateShape(draft);
-        await this.#persist(connection, original, draft);
-        return clone(result);
-      }));
-  }
-
-  async #runTransactionExclusive(operation) {
-    const previous = this.transactionTail;
-    let release;
-    this.transactionTail = new Promise((resolve) => { release = resolve; });
-    await previous;
+    const connection = await this.pool.getConnection();
     try {
-      // Author: 花落. Queue locally before MySQL so overload never creates a pool of lock waiters.
-      return await operation();
-    } finally {
-      release();
-    }
-  }
-
-  async #withDatabaseTransaction(operation) {
-    let connection = null;
-    let transactionStarted = false;
-    let discardConnection = false;
-    try {
-      connection = await this.#acquireConnection();
-      await this.#runWithTimeout(() => connection.beginTransaction(), 'transaction start');
-      transactionStarted = true;
-      const result = await operation(connection);
-      await this.#runWithTimeout(() => connection.commit(), 'transaction commit');
-      transactionStarted = false;
-      return result;
+      await connection.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+      await connection.beginTransaction();
+      const original = await this.#load(connection, true);
+      const draft = clone(original);
+      const result = await mutator(draft);
+      draft.meta.updatedAt = new Date().toISOString();
+      assertStateShape(draft);
+      await this.#persist(connection, original, draft);
+      await connection.commit();
+      return clone(result);
     } catch (error) {
-      if (connection && transactionStarted && !isTransientMysqlError(error)) {
-        const rollbackError = await this.#tryRollback(connection);
-        discardConnection = isTransientMysqlError(rollbackError);
-      }
-      discardConnection ||= isTransientMysqlError(error);
-      if (isTransientMysqlError(error)) {
-        throw this.#storageUnavailable(error);
-      }
+      await connection.rollback();
       throw error;
     } finally {
-      if (connection) this.#releaseConnection(connection, discardConnection);
+      connection.release();
     }
-  }
-
-  async #acquireConnection() {
-    const pending = Promise.resolve().then(() => this.pool.getConnection());
-    try {
-      return await this.#runWithTimeout(() => pending, 'connection acquisition');
-    } catch (error) {
-      if (error?.code === 'KMXT_MYSQL_TIMEOUT') {
-        pending.then((connection) => connection.destroy(), () => {});
-      }
-      throw error;
-    }
-  }
-
-  async #tryRollback(connection) {
-    try {
-      await this.#runWithTimeout(() => connection.rollback(), 'transaction rollback');
-      return null;
-    } catch (error) {
-      return error;
-    }
-  }
-
-  async #runWithTimeout(operation, name) {
-    let timer;
-    const pending = Promise.resolve().then(operation);
-    const deadline = new Promise((resolve, reject) => {
-      timer = setTimeout(() => reject(mysqlTimeoutError(name)), this.operationTimeoutMs);
-    });
-    try {
-      // Author: 花落. Bound MySQL work so an MIT-licensed app fails fast instead of proxying a 504.
-      return await Promise.race([pending, deadline]);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  #releaseConnection(connection, discardConnection) {
-    if (discardConnection) {
-      connection.destroy();
-      return;
-    }
-    connection.release();
-  }
-
-  #storageUnavailable(error) {
-    const code = String(error?.code || 'UNKNOWN').replace(/[^A-Z0-9_]/gi, '_');
-    console.error(`KMXT MySQL temporary failure: ${code}`);
-    return new AppError(
-      'STORAGE_UNAVAILABLE',
-      'Storage is temporarily unavailable; retry shortly',
-      503,
-      { retryAfter: 2 },
-    );
-  }
-
-  async #query(connection, sql, values = undefined) {
-    const options = { sql, timeout: this.operationTimeoutMs };
-    return this.#runWithTimeout(
-      () => (values === undefined ? connection.query(options) : connection.query(options, values)),
-      'query',
-    );
-  }
-
-  async #execute(connection, sql, values) {
-    return this.#runWithTimeout(
-      () => connection.execute({ sql, timeout: this.operationTimeoutMs }, values),
-      'statement execution',
-    );
   }
 
   async #load(connection, forUpdate) {
     const suffix = forUpdate ? ' FOR UPDATE' : '';
-    const [metaRows] = await this.#query(
-      connection,
-      `SELECT schema_version, created_at, updated_at FROM kmxt_meta WHERE singleton_id = 1${suffix}`,
-    );
+    const [metaRows] = await connection.query(`SELECT schema_version, created_at, updated_at FROM kmxt_meta WHERE singleton_id = 1${suffix}`);
     if (!metaRows.length) throw new Error('MySQL schema is not initialized; run `node cli/kmxt.js migrate`');
     const meta = metaRows[0];
     const state = createInitialState(toIso(meta.created_at));
     state.schemaVersion = Number(meta.schema_version);
     state.meta.updatedAt = toIso(meta.updated_at);
-    // Keep each static table read bounded so a provider-specific UNION plan cannot stall all clients.
-    for (const { collection, sql } of STATE_ROW_QUERIES) {
-      const [rows] = await this.#query(connection, sql);
-      if (!Object.hasOwn(state, collection)) {
-        throw new Error(`Unexpected state collection: ${collection}`);
-      }
-      for (const row of rows) {
-        state[collection].push(parsePayload(row.payload));
-      }
+    for (const [collection, table] of TABLES) {
+      const [rows] = await connection.query(`SELECT id, payload FROM ${table}${suffix}`);
+      state[collection] = rows.map((row) => parsePayload(row.payload));
     }
     assertStateShape(state);
     return state;
@@ -261,30 +150,23 @@ export class MysqlStore extends StateStore {
       const removed = original[collection].filter((item) => !currentIds.has(item.id)).map((item) => item.id);
       if (removed.length) {
         const placeholders = removed.map(() => '?').join(',');
-        await this.#execute(connection, `DELETE FROM ${table} WHERE id IN (${placeholders})`, removed);
+        await connection.execute(`DELETE FROM ${table} WHERE id IN (${placeholders})`, removed);
       }
     }
     for (const [collection, table] of TABLES) {
-      const originalPayloads = new Map(
-        original[collection].map((item) => [item.id, jsonPayload(item)]),
-      );
+      const originalById = new Map(original[collection].map((item) => [item.id, item]));
       for (const item of draft[collection]) {
-        const payload = jsonPayload(item);
-        if (originalPayloads.get(item.id) !== payload) {
-          // Author: 花落. Delta writes keep the MIT-licensed state adapter fast as logs grow.
-          await this.#upsert(connection, table, item, payload);
-        }
+        if (!samePayload(item, originalById.get(item.id))) await this.#upsert(connection, table, item);
       }
     }
-    await this.#execute(
-      connection,
+    await connection.execute(
       'UPDATE kmxt_meta SET schema_version = ?, updated_at = ? WHERE singleton_id = 1',
       [draft.schemaVersion, new Date(draft.meta.updatedAt)],
     );
   }
 
-  async #upsert(connection, table, item, payload) {
-    const values = { id: item.id, ...COLUMN_VALUES[table](item), payload };
+  async #upsert(connection, table, item) {
+    const values = { id: item.id, ...COLUMN_VALUES[table](item), payload: jsonPayload(item) };
     const columns = Object.keys(values);
     const updateColumns = columns.filter((name) => name !== 'id');
     const sql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) ON DUPLICATE KEY UPDATE ${updateColumns.map((name) => `${name} = VALUES(${name})`).join(', ')}`;
@@ -293,10 +175,43 @@ export class MysqlStore extends StateStore {
       if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) return new Date(value);
       return value;
     });
-    await this.#execute(connection, sql, parameters);
+    await connection.execute(sql, parameters);
   }
 
   async close() {
     if (this.pool) await this.pool.end();
+  }
+
+
+  async ping() {
+    await this.pool.query('SELECT 1');
+    return true;
+  }
+
+  async statusSummary() {
+    const [[meta], ...counts] = await Promise.all([
+      this.pool.execute('SELECT schema_version, updated_at FROM kmxt_meta WHERE singleton_id = 1'),
+      this.pool.execute('SELECT COUNT(*) AS total FROM merchants'),
+      this.pool.execute('SELECT COUNT(*) AS total FROM applications'),
+      this.pool.execute('SELECT COUNT(*) AS total FROM products'),
+      this.pool.execute('SELECT COUNT(*) AS total FROM orders'),
+      this.pool.execute('SELECT COUNT(*) AS total FROM licenses'),
+      this.pool.execute('SELECT COUNT(*) AS total FROM users'),
+    ]);
+    if (!meta[0]) throw new Error('MySQL schema is not initialized; run `node cli/kmxt.js migrate`');
+    return {
+      schemaVersion: Number(meta[0].schema_version),
+      merchants: Number(counts[0][0][0]?.total ?? 0),
+      applications: Number(counts[1][0][0]?.total ?? 0),
+      products: Number(counts[2][0][0]?.total ?? 0),
+      orders: Number(counts[3][0][0]?.total ?? 0),
+      licenses: Number(counts[4][0][0]?.total ?? 0),
+      users: Number(counts[5][0][0]?.total ?? 0),
+      updatedAt: toIso(meta[0].updated_at),
+    };
+  }
+
+  async dashboard(actor, filters) {
+    return this.repositories.dashboard.get(actor, filters);
   }
 }

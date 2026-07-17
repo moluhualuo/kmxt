@@ -7,26 +7,21 @@ const migrationsDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.
 
 export async function mysqlConnectionOptions(config, { multipleStatements = false } = {}) {
   const password = await readRequiredSecretFile(config.mysql.passwordFile, 'MySQL password');
-  const tlsMode = config.mysql.tlsMode ?? 'verify_identity';
-  const ssl = tlsMode === 'verify_identity'
-    ? {
-        ca: await readRequiredTextFile(config.mysql.tlsCaFile, 'MySQL TLS CA'),
-        rejectUnauthorized: true,
-        minVersion: 'TLSv1.2',
-      }
-    : undefined;
-  return {
+  const options = {
     host: config.mysql.host,
     port: config.mysql.port,
     user: config.mysql.user,
     password,
     database: config.mysql.database,
-    ...(ssl ? { ssl } : {}),
     charset: 'utf8mb4',
     timezone: 'Z',
-    connectTimeout: config.mysql.operationTimeoutMs ?? 8_000,
     multipleStatements,
   };
+  if (config.mysql.tlsMode !== 'disabled') {
+    const ca = await readRequiredTextFile(config.mysql.tlsCaFile, 'MySQL TLS CA');
+    options.ssl = { ca, rejectUnauthorized: true, minVersion: 'TLSv1.2' };
+  }
+  return options;
 }
 
 export async function runMigrations(config) {

@@ -64,6 +64,28 @@ AAR 的 `classes.jar` 内置 `META-INF/LICENSE.KMXT.txt`、`META-INF/LICENSE.nlo
 
 Android library manifest 提供默认 PNG 应用图标 `@mipmap/kmxt_launcher`、圆形图标 `@mipmap/kmxt_launcher_round` 和默认标签 `KMXT`，用于测试安装包或未设置图标的接入方应用；正式接入时宿主 app 可在自己的 manifest 中覆盖 `android:icon`、`android:roundIcon` 和 `android:label`。
 
+## Demo App
+
+`sdk/android/demo-app` 是本地接入示例应用，不参与线上部署。它依赖 `:kmxt-sdk`，提供卡密输入、激活、会话验证和清除会话三个按钮，并使用 PNG launcher 图标，避免把 instrumentation test APK 当作正式应用安装。
+
+默认配置位于 `demo-app/build.gradle.kts` 的 BuildConfig 字段：
+
+- `KMXT_BASE_URL`
+- `KMXT_APP_ID`
+- `KMXT_KEY_ID`
+- `KMXT_PUBLIC_KEY`
+
+从后台“程序”页下载 Android JSON/头文件后，将对应字段替换到 demo app，再构建：
+
+```powershell
+$env:GRADLE_OPTS='-Dorg.gradle.internal.instrumentation.agent=false'
+$env:ANDROID_HOME='D:\exploitation\cmdline-tools\androidSDK'
+$env:ANDROID_SDK_ROOT=$env:ANDROID_HOME
+D:\ck\gardle\gradle-8.14.2\bin\gradle.bat --no-daemon --console=plain :demo-app:assembleDebug
+```
+
+产物路径：`sdk/android/demo-app/build/outputs/apk/debug/demo-app-debug.apk`。当前 badging 已确认 `top.moluhualuo.kmxt.demo.MainActivity` 为 launcher activity，图标为 `res/mipmap-*-v4/kmxt_launcher.png`，native-code 为 `arm64-v8a`。
+
 ## 配置与接口
 
 从后台“程序”页下载 JSON 和 `.hpp`，或调用 `GET /api/v1/apps/:appId/client-config`。应用只内置 `baseUrl`、`appId`、`keyId`、Ed25519 公钥和协议版本，不内置卡密或私钥。

@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: kmxt-license-server:0.5.2
+    image: kmxt-license-server:0.6.0
     restart: unless-stopped
     env_file: ./production.env
     ports:

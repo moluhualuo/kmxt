@@ -4,7 +4,7 @@ set -eu
 # Author: 花落. MIT License.
 cd /root/kmxt/deploy
 test -f production.env
-for secret in root_secret mysql_local_password mysql_local_root_password redis_password admin_password; do
+for secret in root_secret mysql_password mysql_ca.pem redis_password admin_password; do
   test -s "secrets/$secret"
 done
 docker compose config --quiet

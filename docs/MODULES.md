@@ -1,6 +1,6 @@
 # 模块说明
 
-本文对应 KMXT `0.5.2`。作者花落，项目按 MIT 协议发布。
+本文对应 KMXT `0.6.0`。作者花落，项目按 MIT 协议发布。
 
 ## 架构与依赖方向
 
@@ -23,6 +23,9 @@ HTTP 层只负责协议、认证入口和参数转发；业务判断集中在服
 | `LICENSE` | MIT 协议及作者花落。 |
 | `cli/kmxt.js` | 初始化数据、创建首个平台管理员、查看商户/程序/商品/订单/卡密统计及启动服务。 |
 | `scripts/ui-smoke.ps1` | 通过 Chrome DevTools Protocol 登录后台，在指定设备尺寸检测横向溢出并生成截图。 |
+| `scripts/check-utf8.mjs` | `npm run check` 调用的 UTF-8 无 BOM 守卫；检查 Web、服务端、测试、文档与部署文本资产。 |
+| `deploy/scripts/restore.sh` | 仅在应用已停止、根密钥匹配、校验和有效且目标数据库为空时，通过 TLS 导入已验证备份；必须显式确认，不会删除或覆盖数据库。 |
+| `sdk/android/demo-app` | Android SDK 本地接入示例，演示卡密激活、会话验证和清除会话；不参与线上部署。 |
 | `scripts/test-native.ps1` | 使用本机 MSYS2 G++ 严格编译 C++17 静态核心并运行密码学固定向量。 |
 
 ## 核心与配置
@@ -40,6 +43,19 @@ HTTP 层只负责协议、认证入口和参数转发；业务判断集中在服
 | `src/security/crypto.js` | 创建根密钥、scrypt 密码哈希、HMAC 摘要、卡密生成、AES-256-GCM 私钥加密、JSON 规范化和 Ed25519 签名。 |
 | `src/security/replay-guard.js` | 校验毫秒时间戳和一次性 Nonce；生产通过 Redis `SET NX PX` 跨请求原子防重放。 |
 | `src/security/security-state.js` | 抽象 Nonce 与限流状态；JSON 开发模式用内存，MySQL 生产模式强制独立 Redis。 |
+| `src/services/dashboard-service.js` | 按角色、商户和程序聚合后台总览数据。 |
+| `src/services/maintenance-service.js` | 清理过期会话和历史验证日志，并生成审计摘要。 |
+| `src/storage/repositories/mysql-dashboard-repository.js` | MySQL Dashboard 的定向聚合查询；只读取索引字段和计数，不加载 JSON payload 表。 |
+| `src/storage/repositories/mysql-order-repository.js` | MySQL 公开下单、订单查询、拒单与审核发卡；写操作锁定相关资源，审核时使用 `source_id` 唯一约束保护幂等性。 |
+| `src/storage/repositories/mysql-verification-repository.js` | MySQL 激活与心跳验证；锁定程序、商户、卡密、绑定和会话的相关行，原子处理设备上限和会话续期。 |
+| `src/storage/repositories/mysql-license-repository.js` | MySQL 卡密批量生成、查询、批次、设备绑定、完整卡密查看和删除；批量发卡写入摘要与加密密文，敏感查看和删除均在资源锁定事务中写审计，删除会清理会话、验证记录和设备绑定。 |
+| `src/storage/repositories/mysql-auth-repository.js` | MySQL 管理员账号与会话查询；登录、账号创建、改密、重置密码和账号停用在定向事务中锁定用户并撤销对应管理会话。 |
+| `src/storage/repositories/mysql-merchant-repository.js` | MySQL 商户创建、资料和状态管理；停用商户时在同一事务中撤销所属管理会话和客户端会话。 |
+| `src/storage/repositories/mysql-application-repository.js` | MySQL 程序创建、设置、公开配置和状态管理；停用程序时锁定资源并撤销客户端会话，不轮换签名密钥。 |
+| `src/storage/repositories/mysql-product-repository.js` | MySQL 商品创建、编辑、启停、列表和公开店铺读取；店铺查询只返回启用商户、程序和商品。 |
+| `src/storage/repositories/mysql-audit-repository.js` | MySQL 审计和验证日志的租户范围、事件、时间和分页查询。 |
+| `src/storage/repositories/mysql-maintenance-repository.js` | MySQL 过期会话和验证日志清理；删除与无敏感数据的审计摘要在同一事务完成。 |
+| `public/js/views/overview.js` | 后台总览视图模块；调用 Dashboard API 并展示权限范围内的实时统计。 |
 
 根密钥默认位于 `data/secret.key`，用于派生不同用途的 HMAC 和加密密钥。卡密、管理令牌、客户端会话和设备标识使用不同的用途标签，避免同一摘要跨域复用。
 
@@ -47,10 +63,10 @@ HTTP 层只负责协议、认证入口和参数转发；业务判断集中在服
 
 | 模块 | 职责 |
 | --- | --- |
-| `src/storage/schema.js` | 定义当前数据结构版本和全部集合，并在读写时检查结构。 |
+| `src/storage/schema.js` | 定义当前 schema v4 数据结构版本和全部集合，并在读写时检查结构及升级旧 JSON 状态。 |
 | `src/storage/json-store.js` | 将事务串行化，使用内存副本修改并通过临时文件替换实现原子写入。 |
 | `src/storage/store.js` | `initialize/read/transaction/close` 存储契约，业务服务不感知适配器。 |
-| `src/storage/mysql-store.js` | MySQL 8 适配器；以实例内 FIFO 队列和 `kmxt_meta` InnoDB 行锁串行写事务，按固定表顺序读取状态并仅持久化新增、变化或删除的记录。空闲连接会轮换，连接丢失或 8 秒存储超时会销毁故障连接并返回可重试的 503。 |
+| `src/storage/mysql-store.js` | MySQL 8 适配器；注册 Dashboard、订单、验证、卡密、账号、商户、程序、商品、日志和维护领域 Repository，兼容事务仅供诊断。 |
 | `src/storage/migrate.js` | 按文件名顺序执行 `migrations/` 中尚未登记的版本化 SQL。 |
 | `src/storage/secret-file.js` | 从只读文件读取 MySQL、Redis 机密和 TLS CA，拒绝空值。 |
 
@@ -65,7 +81,7 @@ HTTP 层只负责协议、认证入口和参数转发；业务判断集中在服
 | `products` | 公开店铺套餐、展示价格、授权天数、设备上限和状态。 |
 | `orders` | 人工审核订单、商品快照、加密联系方式、查询码摘要及加密交付卡密。 |
 | `licenseBatches` | 卡密生成批次和批次参数。 |
-| `licenses` | 卡密摘要、生命周期、有效期及设备上限。 |
+| `licenses` | 卡密摘要、根密钥派生加密副本、生命周期、有效期及设备上限。 |
 | `deviceBindings` | 设备摘要、显示标签及绑定状态。 |
 | `clientSessions` | 激活后产生的短期验证会话摘要。 |
 | `auditLogs` | 管理端操作记录。 |
@@ -78,13 +94,14 @@ HTTP 层只负责协议、认证入口和参数转发；业务判断集中在服
 | `src/services/access-control.js` | 角色定义、租户访问断言，以及商户、程序、卡密和绑定查找。 |
 | `src/services/presenters.js` | 将内部记录转换为安全输出，去除密码、摘要和加密私钥。 |
 | `src/services/audit-service.js` | 在业务事务内写入审计记录，按商户查询审计，按程序查询验证日志。 |
-| `src/services/auth-service.js` | 创建首个平台管理员、登录、会话校验、退出、自助改密、商户账号密码重置及会话撤销。 |
-| `src/services/merchant-service.js` | 平台创建、查询、启用和禁用商户。禁用会撤销该商户所有会话。 |
-| `src/services/application-service.js` | 创建及管理程序；为每个程序生成独立 Ed25519 密钥，并提供公开客户端配置。 |
-| `src/services/license-service.js` | 批量生成卡密、分页查询、启停卡密、设备列表及解绑。 |
-| `src/services/product-service.js` | 商户程序商品管理及公开店铺商品读取。 |
-| `src/services/order-service.js` | 公开下单、查询码校验、订单列表、拒绝和幂等人工发卡。 |
+| `src/services/auth-service.js` | 创建首个平台管理员、登录、会话校验、退出、自助改密、商户账号密码重置、账号启停及会话撤销；MySQL 模式委托账号领域 Repository，JSON 模式保留同一契约。 |
+| `src/services/merchant-service.js` | 平台创建、查询、启用和禁用商户。MySQL 模式用定向事务禁用商户并撤销其所有会话。 |
+| `src/services/application-service.js` | 创建及管理程序；为每个程序生成独立 Ed25519 密钥，并提供公开客户端配置。MySQL 模式以定向事务更新设置或停用程序，不轮换密钥。 |
+| `src/services/product-service.js` | 管理商品和公开店铺商品读取；MySQL 模式使用商品领域 Repository 保持商户边界与展示排序。 |
+| `src/services/license-service.js` | 批量生成卡密、分页查询、启停卡密、完整卡密查看、删除、设备列表、单设备解绑及整卡密解绑全部设备；卡密以摘要校验并以根密钥派生 AES-256-GCM 密文保存，查看与删除均受租户权限和审计保护。 |
+| `src/services/order-service.js` | 公开下单、查询码校验、订单列表、拒绝和幂等人工发卡；MySQL 模式以定向事务保存加密联系信息、拒单和发卡，并为订单卡密保存订单交付密文与卡密恢复密文。 |
 | `src/services/verification-service.js` | 首次激活、有效期计算、设备绑定、短期会话、心跳续期和签名响应。 |
+| `src/services/maintenance-service.js` | 清理过期管理/客户端会话和历史验证日志；MySQL 模式以定向删除事务记录维护审计摘要。 |
 
 ## HTTP 模块
 
@@ -110,10 +127,19 @@ HTTP 层只负责协议、认证入口和参数转发；业务判断集中在服
 | --- | --- |
 | `public/index.html` | 后台入口、语义结构、加载状态和无障碍跳转链接。 |
 | `public/styles.css` | 数据密集型后台设计系统、响应式布局、状态颜色、对话框及减少动画规则。 |
-| `public/js/api.js` | Bearer 会话、统一 API 请求、网络错误及未授权事件。令牌只保存在 `sessionStorage`。 |
+| `public/js/api.js` | Bearer 会话、统一 GET/POST/PATCH/DELETE API 请求、网络错误及未授权事件。令牌只保存在 `sessionStorage`。 |
 | `public/js/state.js` | 当前用户、商户、程序、页面、筛选和分页状态。 |
 | `public/js/components.js` | HTML 转义、图标、状态、分页、提示、对话框、确认和文件导出组件。 |
-| `public/js/app.js` | 登录、改密、总览、商户、程序、卡密、设备、账号密码重置和日志视图及事件编排。 |
+| `public/js/app.js` | 登录、会话初始化、侧栏、上下文切换、对话框操作和事件编排；包含完整卡密的受确认展示/复制与删除确认，页面渲染委托给 `views/`。 |
+| `public/js/views/shared.js` | 后台视图共享 API、状态、表格格式化、页面标题和角色判断。 |
+| `public/js/views/overview.js` | 权限范围 Dashboard 总览。 |
+| `public/js/views/merchants.js` | 平台商户列表与启停入口。 |
+| `public/js/views/applications.js` | 程序列表、设置和客户端配置下载入口。 |
+| `public/js/views/licenses.js` | 卡密列表、筛选、分页、批次和设备入口；仅向拥有者渲染完整卡密查看与删除操作。 |
+| `public/js/views/products.js` | 商品列表、状态和公开店铺入口。 |
+| `public/js/views/orders.js` | 订单状态、编号、时间筛选和人工发卡入口。 |
+| `public/js/views/users.js` | 商户账号、密码重置和启停入口。 |
+| `public/js/views/logs.js` | 审计/验证日志模式、事件和时间筛选入口。 |
 | `public/store.html` | `/store/:merchantCode` 用户店铺入口。 |
 | `public/store.css` | 套餐、订单提交、查询和卡密交付的响应式样式。 |
 | `public/js/store.js` | 公开商品加载、提交订单、本机凭证、订单查询和卡密复制。 |
@@ -148,15 +174,3 @@ pending -> fulfilled
 ```
 
 发卡操作在同一事务中创建卡密和更新订单；已完成订单再次调用发卡接口只返回原结果，不会生成第二张卡。
-
-## 本地数据库迁移模块
-
-| 模块 | 职责 |
-| --- | --- |
-| `src/config.js` | 解析 `KMXT_MYSQL_TLS_MODE`；默认验证外部 MySQL 身份，仅允许显式选择私有网络无 TLS。 |
-| `src/storage/migrate.js` | 根据 TLS 模式构造 MySQL 连接；验证模式读取 CA，禁用模式不加载 CA。 |
-| `cli/import-state-json.js` | 解压裸状态或紧急导出封装并验证快照，拒绝非空目标，通过单个存储事务导入并复核集合计数。 |
-| `deploy/compose.yaml` | 编排本地 MySQL 8.4、健康检查、应用依赖、两个密码 secret 和持久数据卷。 |
-| `deploy/scripts/backup.sh` | 在数据库容器内执行 SQL 导出，检查非空、gzip 完整性和 SHA-256，执行日备与周备保留。 |
-
-这些模块由花落维护并按 MIT 协议发布。迁移工具是离线管理入口，不新增 HTTP API，也不会改变现有 `/api/v1` 契约。

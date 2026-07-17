@@ -13,6 +13,8 @@ import { MerchantService } from './services/merchant-service.js';
 import { OrderService } from './services/order-service.js';
 import { ProductService } from './services/product-service.js';
 import { VerificationService } from './services/verification-service.js';
+import { DashboardService } from './services/dashboard-service.js';
+import { MaintenanceService } from './services/maintenance-service.js';
 import { createStore } from './storage/create-store.js';
 
 // Author: 花落. This project is provided under the MIT License.
@@ -28,7 +30,7 @@ export async function createRuntime(configOverrides = {}) {
     throw error;
   }
   const services = {
-    auth: new AuthService(store, rootSecret, config),
+    auth: new AuthService(store, rootSecret, config, securityState),
     merchants: new MerchantService(store),
     applications: new ApplicationService(store, rootSecret, config),
     licenses: new LicenseService(store, rootSecret, config),
@@ -36,6 +38,9 @@ export async function createRuntime(configOverrides = {}) {
     orders: new OrderService(store, rootSecret),
     audit: new AuditService(store),
     verification: new VerificationService(store, rootSecret, config, securityState),
+    dashboard: new DashboardService(store),
+    maintenance: new MaintenanceService(store),
+    readiness: { async check() { const [storage, security] = await Promise.all([store.ping(), securityState.ping()]); return { storage, security, rootKey: rootSecret.length > 0 }; } },
   };
   const router = new Router({ authService: services.auth, config, securityState });
   registerRoutes(router, services);

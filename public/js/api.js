@@ -64,5 +64,6 @@ export const api = Object.freeze({
   get: (path) => request('GET', path),
   post: (path, body) => request('POST', path, body),
   patch: (path, body) => request('PATCH', path, body),
+  delete: (path) => request('DELETE', path),
   login: (username, password) => request('POST', '/api/v1/auth/login', { username, password }),
 });

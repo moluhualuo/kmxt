@@ -7,23 +7,16 @@ BASE=/root/kmxt/backups
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 DAILY="$BASE/daily/$STAMP"
 mkdir -p "$DAILY" "$BASE/weekly"
-DUMP="$DAILY/kamxt1.sql"
 
-cleanup() {
-  rm -f "$DUMP"
-}
-trap cleanup EXIT HUP INT TERM
-
-cd /root/kmxt/deploy
-docker compose exec -T mysql sh -eu -c '
-  export MYSQL_PWD="$(cat /run/secrets/mysql_local_password)"
-  exec mysqldump --single-transaction --routines --events --triggers \
-    --no-tablespaces --set-gtid-purged=OFF --host=127.0.0.1 --port=3306 \
-    --user="$MYSQL_USER" "$MYSQL_DATABASE"
-' > "$DUMP"
-test -s "$DUMP"
-gzip -9 "$DUMP"
-gzip -t "$DAILY/kamxt1.sql.gz"
+set -a
+. /root/kmxt/deploy/backup.env
+set +a
+MYSQL_PWD=$(cat /root/kmxt/deploy/secrets/mysql_password)
+export MYSQL_PWD
+mysqldump --single-transaction --routines --events --triggers \
+  --ssl-mode=VERIFY_IDENTITY --ssl-ca=/root/kmxt/deploy/secrets/mysql_ca.pem \
+  --host="$KMXT_MYSQL_HOST" --port="$KMXT_MYSQL_PORT" \
+  --user="$KMXT_MYSQL_USER" "$KMXT_MYSQL_DATABASE" | gzip -9 > "$DAILY/kamxt1.sql.gz"
 cp /root/kmxt/deploy/secrets/root_secret "$DAILY/root_secret"
 sha256sum "$DAILY/kamxt1.sql.gz" "$DAILY/root_secret" > "$DAILY/SHA256SUMS"
 

@@ -6,19 +6,20 @@ const ADMIN_ROLES = [Roles.PLATFORM_ADMIN, Roles.MERCHANT_ADMIN, Roles.OPERATOR]
 const OWNER_ROLES = [Roles.PLATFORM_ADMIN, Roles.MERCHANT_ADMIN];
 const LOGIN_LIMIT = { limit: 10, windowSeconds: 60 };
 const ADMIN_LIMIT = { limit: 180, windowSeconds: 60 };
-const CLIENT_LIMIT = { limit: 30, windowSeconds: 60 };
+const CLIENT_LIMIT = { limit: 300, windowSeconds: 60 };
 const STORE_READ_LIMIT = { limit: 120, windowSeconds: 60 };
 const STORE_ORDER_LIMIT = { limit: 10, windowSeconds: 60 };
 const STORE_QUERY_LIMIT = { limit: 30, windowSeconds: 60 };
 
 export function registerRoutes(router, services) {
-  // Author: 花落. Keep MIT release metadata aligned with the deployed image.
   router.add('GET', '/health', { rateLimit: ADMIN_LIMIT }, async () => ({
     status: 'ok',
     service: 'kmxt-license-server',
-    version: '0.5.2',
+    version: '0.6.0',
     time: new Date().toISOString(),
   }));
+  router.add('GET', '/ready', { rateLimit: ADMIN_LIMIT }, async () => ({ status: 'ready', checks: await services.readiness.check() }));
+  router.add('GET', '/api/v1/dashboard', { auth: true, roles: ADMIN_ROLES, rateLimit: ADMIN_LIMIT }, async ({ user, query }) => services.dashboard.get(user, { merchantId: query.get('merchantId'), appId: query.get('appId') }));
 
   router.add('POST', '/api/v1/auth/login', { rateLimit: LOGIN_LIMIT }, async ({ body }) => {
     return services.auth.login(requireObject(body));
@@ -56,6 +57,7 @@ export function registerRoutes(router, services) {
     params.merchantId,
     requireObject(body).status,
   ));
+  router.add('PATCH', '/api/v1/platform/merchants/:merchantId', { auth: true, roles: [Roles.PLATFORM_ADMIN], rateLimit: ADMIN_LIMIT }, async ({ user, params, body }) => services.merchants.update(user, params.merchantId, requireObject(body)));
 
   router.add('GET', '/api/v1/merchants/:merchantId/users', {
     auth: true,
@@ -80,6 +82,7 @@ export function registerRoutes(router, services) {
     params.userId,
     requireObject(body),
   ));
+  router.add('PATCH', '/api/v1/users/:userId/status', { auth: true, roles: OWNER_ROLES, rateLimit: ADMIN_LIMIT }, async ({ user, params, body }) => services.auth.setUserStatus(user, params.userId, requireObject(body).status));
 
   router.add('GET', '/api/v1/merchants/:merchantId/apps', {
     auth: true,
@@ -114,6 +117,7 @@ export function registerRoutes(router, services) {
     params.appId,
     requireObject(body).status,
   ));
+  router.add('PATCH', '/api/v1/apps/:appId', { auth: true, roles: OWNER_ROLES, rateLimit: ADMIN_LIMIT }, async ({ user, params, body }) => services.applications.update(user, params.appId, requireObject(body)));
 
   router.add('GET', '/api/v1/apps/:appId/products', {
     auth: true,
@@ -157,6 +161,7 @@ export function registerRoutes(router, services) {
     params.appId,
     requireObject(body),
   )));
+  router.add('GET', '/api/v1/apps/:appId/license-batches', { auth: true, roles: ADMIN_ROLES, rateLimit: ADMIN_LIMIT }, async ({ user, params, query }) => services.licenses.listBatches(user, params.appId, parsePagination(query)));
   router.add('GET', '/api/v1/apps/:appId/licenses', {
     auth: true,
     roles: ADMIN_ROLES,
@@ -167,6 +172,11 @@ export function registerRoutes(router, services) {
     parsePagination(query),
     { status: query.get('status'), key: query.get('key') },
   ));
+  router.add('POST', '/api/v1/apps/:appId/licenses/bulk-delete', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params, body }) => services.licenses.bulkDelete(user, params.appId, requireObject(body)));
   router.add('PATCH', '/api/v1/licenses/:licenseId/status', {
     auth: true,
     roles: ADMIN_ROLES,
@@ -176,11 +186,27 @@ export function registerRoutes(router, services) {
     params.licenseId,
     requireObject(body).status,
   ));
+  // Author: 花落. Owner-only key disclosure and removal routes are provided under the MIT License.
+  router.add('POST', '/api/v1/licenses/:licenseId/reveal-key', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params }) => services.licenses.revealKey(user, params.licenseId));
+  router.add('DELETE', '/api/v1/licenses/:licenseId', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params }) => services.licenses.delete(user, params.licenseId));
   router.add('GET', '/api/v1/licenses/:licenseId/devices', {
     auth: true,
     roles: ADMIN_ROLES,
     rateLimit: ADMIN_LIMIT,
   }, async ({ user, params }) => services.licenses.listDevices(user, params.licenseId));
+  router.add('POST', '/api/v1/licenses/:licenseId/unbind-all', {
+    auth: true,
+    roles: ADMIN_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params }) => services.licenses.unbindAllDevices(user, params.licenseId));
   router.add('POST', '/api/v1/device-bindings/:bindingId/unbind', {
     auth: true,
     roles: ADMIN_ROLES,
@@ -195,6 +221,7 @@ export function registerRoutes(router, services) {
     user,
     params.merchantId,
     parsePagination(query),
+    { action: query.get('action'), from: query.get('from'), to: query.get('to') },
   ));
   router.add('GET', '/api/v1/apps/:appId/verification-logs', {
     auth: true,
@@ -204,6 +231,7 @@ export function registerRoutes(router, services) {
     user,
     params.appId,
     parsePagination(query),
+    { event: query.get('event'), resultCode: query.get('resultCode'), from: query.get('from'), to: query.get('to') },
   ));
 
   router.add('GET', '/api/v1/merchants/:merchantId/orders', {
@@ -214,7 +242,7 @@ export function registerRoutes(router, services) {
     user,
     params.merchantId,
     parsePagination(query),
-    query.get('status'),
+    { status: query.get('status'), orderNo: query.get('orderNo'), from: query.get('from'), to: query.get('to') },
   ));
   router.add('POST', '/api/v1/orders/:orderId/fulfill', {
     auth: true,

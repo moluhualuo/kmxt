@@ -21,6 +21,12 @@ export class MemorySecurityState {
     return { count: current.count, retryAfter: Math.max(1, Math.ceil((current.resetAt - now) / 1000)) };
   }
 
+  async clearRate(key) {
+    this.#limits.delete(key);
+  }
+
+  async ping() { return true; }
+
   #cleanup(now) {
     for (const [key, expiresAt] of this.#nonces) if (expiresAt <= now) this.#nonces.delete(key);
     if (this.#limits.size > 1000) {
@@ -69,6 +75,15 @@ export class RedisSecurityState {
       arguments: [String(windowSeconds)],
     });
     return { count: Number(result[0]), retryAfter: Math.max(1, Number(result[1])) };
+  }
+
+
+  async clearRate(key) {
+    await this.client.del(this.#key('rate', key));
+  }
+
+  async ping() {
+    return (await this.client.ping()) === 'PONG';
   }
 
   async close() {

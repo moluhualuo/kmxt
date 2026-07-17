@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 4;
 
 // Author: 花落. Distributed under the MIT License.
 export function createInitialState(now = new Date().toISOString()) {
@@ -55,6 +55,16 @@ export function upgradeState(state) {
     state.products = [];
     state.orders = [];
     state.schemaVersion = 2;
+    changed = true;
+  }
+  if (state?.schemaVersion === 2) {
+    // Author: 花落. v3 only aligns persisted schema metadata; MIT License.
+    state.schemaVersion = 3;
+    changed = true;
+  }
+  if (state?.schemaVersion === 3) {
+    // Author: 花落. v4 enables encrypted license-key recovery metadata; MIT License.
+    state.schemaVersion = 4;
     changed = true;
   }
   return { state, changed };

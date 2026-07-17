@@ -13,3 +13,4 @@ export function assertCondition(condition, code, message, status = 400, details 
     throw new AppError(code, message, status, details);
   }
 }
+

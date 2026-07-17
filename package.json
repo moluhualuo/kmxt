@@ -1,6 +1,6 @@
 {
   "name": "kmxt-license-server",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Multi-tenant license key verification service",
   "type": "module",
   "private": true,
@@ -13,7 +13,7 @@
     "start": "node src/server.js",
     "cli": "node cli/kmxt.js",
     "test": "node --test",
-    "check": "node --check src/server.js && node --check cli/kmxt.js && node --check public/js/api.js && node --check public/js/state.js && node --check public/js/components.js && node --check public/js/app.js && node --check public/js/store.js"
+    "check": "node --check src/server.js && node --check cli/kmxt.js && node --check src/storage/mysql-store.js && node --check src/storage/repositories/mysql-dashboard-repository.js && node --check src/storage/repositories/mysql-order-repository.js && node --check src/storage/repositories/mysql-verification-repository.js && node --check src/storage/repositories/mysql-license-repository.js && node --check src/storage/repositories/mysql-auth-repository.js && node --check src/storage/repositories/mysql-merchant-repository.js && node --check src/storage/repositories/mysql-application-repository.js && node --check src/storage/repositories/mysql-product-repository.js && node --check src/storage/repositories/mysql-audit-repository.js && node --check src/storage/repositories/mysql-maintenance-repository.js && node --check src/services/auth-service.js && node --check src/services/merchant-service.js && node --check src/services/application-service.js && node --check src/services/product-service.js && node --check src/services/license-service.js && node --check src/services/order-service.js && node --check src/services/audit-service.js && node --check src/services/maintenance-service.js && node --check public/js/api.js && node --check public/js/state.js && node --check public/js/components.js && node --check public/js/views/shared.js && node --check public/js/views/overview.js && node --check public/js/views/merchants.js && node --check public/js/views/applications.js && node --check public/js/views/licenses.js && node --check public/js/views/products.js && node --check public/js/views/orders.js && node --check public/js/views/users.js && node --check public/js/views/logs.js && node --check public/js/app.js && node --check public/js/store.js && node scripts/check-utf8.mjs"
   },
   "dependencies": {
     "mysql2": "^3.14.2",

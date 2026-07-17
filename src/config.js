@@ -33,10 +33,10 @@ function readBoolean(name, fallback) {
   throw new Error(`${name} must be true or false`);
 }
 
-function readEnum(name, fallback, allowed) {
+function readEnum(name, fallback, values) {
   const value = process.env[name] || fallback;
-  if (!allowed.includes(value)) {
-    throw new Error(`${name} must be one of: ${allowed.join(', ')}`);
+  if (!values.includes(value)) {
+    throw new Error(`${name} must be one of: ${values.join(', ')}`);
   }
   return value;
 }
@@ -67,12 +67,8 @@ export function loadConfig(overrides = {}) {
       database: process.env.KMXT_MYSQL_DATABASE || 'kamxt1',
       passwordFile: optionalPath(process.env.KMXT_MYSQL_PASSWORD_FILE),
       tlsCaFile: optionalPath(process.env.KMXT_MYSQL_TLS_CA_FILE),
-      // Author: 花落. MIT License. Plain MySQL is opt-in for an isolated local network only.
       tlsMode: readEnum('KMXT_MYSQL_TLS_MODE', 'verify_identity', ['verify_identity', 'disabled']),
       poolLimit: readInteger('KMXT_MYSQL_POOL_LIMIT', 10),
-      maxIdle: readInteger('KMXT_MYSQL_MAX_IDLE', 1, 0),
-      idleTimeoutMs: readInteger('KMXT_MYSQL_IDLE_TIMEOUT_MS', 60 * 1000, 1000),
-      operationTimeoutMs: readInteger('KMXT_MYSQL_OPERATION_TIMEOUT_MS', 8 * 1000, 1000),
       autoMigrate: readBoolean('KMXT_MYSQL_AUTO_MIGRATE', false),
     },
     redis: {

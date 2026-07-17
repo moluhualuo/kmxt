@@ -55,6 +55,9 @@ export class ProductService {
   async create(actor, appId, input) {
     assertRole(actor, [Roles.PLATFORM_ADMIN, Roles.MERCHANT_ADMIN]);
     const values = readProductInput(input);
+    if (this.store.repositories?.products) {
+      return presentProduct(await this.store.repositories.products.create(actor, appId, values));
+    }
     return this.store.transaction((state) => {
       const application = findApplicationOrThrow(state, appId, { requireActive: true });
       assertMerchantAccess(actor, application.merchantId);
@@ -84,6 +87,9 @@ export class ProductService {
   }
 
   async list(actor, appId) {
+    if (this.store.repositories?.products) {
+      return (await this.store.repositories.products.list(actor, appId)).map(presentProduct);
+    }
     return this.store.read((state) => {
       const application = findApplicationOrThrow(state, appId);
       assertMerchantAccess(actor, application.merchantId);
@@ -96,6 +102,12 @@ export class ProductService {
 
   async update(actor, productId, input) {
     assertRole(actor, [Roles.PLATFORM_ADMIN, Roles.MERCHANT_ADMIN]);
+    if (this.store.repositories?.products) {
+      const product = await this.store.repositories.products.update(actor, productId, (current) => {
+        Object.assign(current, readProductInput(input, current));
+      });
+      return presentProduct(product);
+    }
     return this.store.transaction((state) => {
       const product = findProductOrThrow(state, productId);
       assertMerchantAccess(actor, product.merchantId);
@@ -115,6 +127,9 @@ export class ProductService {
   async setStatus(actor, productId, requestedStatus) {
     assertRole(actor, [Roles.PLATFORM_ADMIN, Roles.MERCHANT_ADMIN]);
     const status = requireEnum(requestedStatus, 'status', ['active', 'disabled']);
+    if (this.store.repositories?.products) {
+      return presentProduct(await this.store.repositories.products.setStatus(actor, productId, status));
+    }
     return this.store.transaction((state) => {
       const product = findProductOrThrow(state, productId);
       assertMerchantAccess(actor, product.merchantId);
@@ -134,6 +149,9 @@ export class ProductService {
 
   async getPublicStore(merchantCode) {
     const code = requireString(merchantCode, 'merchantCode', { min: 2, max: 32 }).toUpperCase();
+    if (this.store.repositories?.products) {
+      return this.store.repositories.products.getPublicStore(code);
+    }
     return this.store.read((state) => {
       const merchant = state.merchants.find((item) => item.code === code);
       if (!merchant || merchant.status !== 'active') {

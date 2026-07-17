@@ -159,3 +159,4 @@ export function verifySignedEnvelope(envelope, publicKey) {
     decode(envelope.signature),
   );
 }
+

@@ -414,6 +414,16 @@ a:focus-visible {
   gap: 8px;
 }
 
+.toolbar .input,
+.toolbar .select {
+  width: auto;
+  min-width: 142px;
+}
+
+.toolbar .input[type="datetime-local"] {
+  min-width: 188px;
+}
+
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -676,6 +686,15 @@ tbody tr:last-child td {
 .icon-button:hover {
   border-color: var(--primary);
   color: var(--primary);
+}
+
+.icon-button.danger {
+  color: var(--danger);
+}
+
+.icon-button.danger:hover {
+  border-color: var(--danger);
+  color: var(--danger-hover);
 }
 
 .icon-button.on-dark {
@@ -1056,6 +1075,19 @@ dialog::backdrop {
 
   .page-actions .button {
     flex: 1;
+  }
+
+  .toolbar,
+  .toolbar .inline-actions,
+  .toolbar form {
+    width: 100%;
+  }
+
+  .toolbar .input,
+  .toolbar .select,
+  .toolbar .input[type="datetime-local"] {
+    width: 100%;
+    min-width: 0;
   }
 
   .topbar-title span {

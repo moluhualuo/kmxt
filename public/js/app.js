@@ -14,6 +14,14 @@ import {
   statusBadge,
 } from './components.js';
 import { store } from './state.js';
+import { renderOverviewView } from './views/overview.js';
+import { renderMerchantsView } from './views/merchants.js';
+import { renderApplicationsView } from './views/applications.js';
+import { renderLicensesView } from './views/licenses.js';
+import { renderProductsView } from './views/products.js';
+import { renderOrdersView } from './views/orders.js';
+import { renderUsersView } from './views/users.js';
+import { renderLogsView } from './views/logs.js';
 
 const appRoot = document.querySelector('#app');
 const VIEW_LABELS = Object.freeze({
@@ -50,6 +58,8 @@ function friendlyError(error) {
     APPLICATION_DISABLED: '当前程序已被禁用。',
     LICENSE_EXPIRED: '卡密已到期。',
     DEVICE_LIMIT_REACHED: '卡密已达到设备数量上限。',
+    LICENSE_KEY_UNAVAILABLE: '该历史卡密没有可恢复的加密副本，无法显示完整卡密。',
+    LICENSE_HAS_ORDER: '该卡密关联已发卡订单，为保留交付记录不能删除。',
     ORDER_NOT_PENDING: '该订单已经处理。',
     PRODUCT_UNAVAILABLE: '该商品当前不可用。',
     CURRENT_PASSWORD_INVALID: '当前密码不正确。',
@@ -262,14 +272,16 @@ async function renderCurrentView() {
   try {
     let html;
     switch (store.value.view) {
-      case 'merchants': html = await renderMerchants(); break;
-      case 'applications': html = await renderApplications(); break;
-      case 'licenses': html = await renderLicenses(); break;
-      case 'products': html = await renderProducts(); break;
-      case 'orders': html = await renderOrders(); break;
-      case 'users': html = await renderUsers(); break;
-      case 'logs': html = await renderLogs(); break;
-      default: html = await renderOverview();
+      case 'merchants': html = await renderMerchantsView(); break;
+      case 'applications': html = await renderApplicationsView(); break;
+      case 'licenses': html = await renderLicensesView(); break;
+      case 'products': html = await renderProductsView(); break;
+      case 'orders': html = await renderOrdersView(); break;
+      case 'users': html = await renderUsersView(); break;
+      case 'logs': html = await renderLogsView(); break;
+      default: html = await renderOverviewView({
+        api, store, pageHeader, icon, emptyState, escapeHtml, formatDate, isPlatformAdmin,
+      });
     }
     if (generation === viewGeneration && document.body.contains(main)) {
       main.innerHTML = html;
@@ -283,246 +295,6 @@ async function renderCurrentView() {
       setBusy(false);
     }
   }
-}
-
-async function renderOverview() {
-  const merchant = store.merchant;
-  const application = store.application;
-  let licenseTotal = 0;
-  let recentVerification = [];
-  if (application) {
-    const [licenses, logs] = await Promise.all([
-      api.get(`/api/v1/apps/${encodeURIComponent(application.id)}/licenses?page=1&limit=1`),
-      api.get(`/api/v1/apps/${encodeURIComponent(application.id)}/verification-logs?page=1&limit=5`),
-    ]);
-    licenseTotal = licenses.total;
-    recentVerification = logs.items;
-  }
-  const actions = isPlatformAdmin() && !merchant
-    ? `<button class="button" type="button" data-action="create-merchant">${icon('plus')}新建商户</button>`
-    : `<button class="button" type="button" data-action="create-app" ${merchant ? '' : 'disabled'}>${icon('plus')}新建程序</button>`;
-  const recentRows = recentVerification.map((entry) => `<tr>
-    <td class="cell-primary">${escapeHtml(entry.event === 'activate' ? '激活' : '心跳')}</td>
-    <td><span class="mono">${escapeHtml(entry.licenseId.slice(0, 8))}</span></td>
-    <td>${escapeHtml(entry.clientVersion || '-')}</td>
-    <td>${formatDate(entry.createdAt)}</td>
-  </tr>`).join('');
-
-  return `${pageHeader('业务总览', merchant ? merchant.name : '平台范围', actions)}
-    <section class="metrics-grid" aria-label="业务指标">
-      <article class="metric-card"><div><small>商户</small><div class="metric-value">${isPlatformAdmin() ? store.value.merchants.length : merchant ? 1 : 0}</div></div><span class="metric-icon">${icon('building-2')}</span></article>
-      <article class="metric-card"><div><small>程序</small><div class="metric-value">${store.value.applications.length}</div></div><span class="metric-icon info">${icon('boxes')}</span></article>
-      <article class="metric-card"><div><small>当前程序卡密</small><div class="metric-value">${licenseTotal}</div></div><span class="metric-icon">${icon('key-round')}</span></article>
-      <article class="metric-card"><div><small>当前程序</small><div class="metric-value">${application ? statusBadge(application.status) : '-'}</div></div><span class="metric-icon info">${icon('shield-check')}</span></article>
-    </section>
-    <section class="section">
-      <div class="section-header"><h2>最近验证</h2>${application ? `<span class="cell-secondary">${escapeHtml(application.name)}</span>` : ''}</div>
-      <div class="table-frame">
-        ${application && recentRows ? `<div class="table-scroll"><table><thead><tr><th>事件</th><th>卡密 ID</th><th>客户端版本</th><th>时间</th></tr></thead><tbody>${recentRows}</tbody></table></div>` : emptyState('scroll-text', '暂无验证记录', application ? '当前程序尚无验证记录。' : '请先创建或选择程序。')}
-      </div>
-    </section>`;
-}
-
-async function renderMerchants() {
-  const rows = store.value.merchants.map((merchant) => `<tr>
-    <td><span class="cell-primary">${escapeHtml(merchant.name)}</span><span class="cell-secondary mono">${escapeHtml(merchant.id.slice(0, 8))}</span></td>
-    <td class="mono">${escapeHtml(merchant.code)}</td>
-    <td>${statusBadge(merchant.status)}</td>
-    <td>${formatDate(merchant.createdAt)}</td>
-    <td><div class="inline-actions">
-      <button class="button secondary small" type="button" data-action="select-merchant" data-id="${escapeHtml(merchant.id)}">进入</button>
-      <button class="icon-button" type="button" data-action="toggle-merchant" data-id="${escapeHtml(merchant.id)}" data-status="${escapeHtml(merchant.status)}" aria-label="${merchant.status === 'active' ? '禁用' : '启用'}商户" title="${merchant.status === 'active' ? '禁用' : '启用'}">${icon(merchant.status === 'active' ? 'ban' : 'circle-check')}</button>
-    </div></td>
-  </tr>`).join('');
-  return `${pageHeader('商户', '平台租户管理', `<button class="button" type="button" data-action="create-merchant">${icon('plus')}新建商户</button>`)}
-    <div class="table-frame">
-      ${rows ? `<div class="table-scroll"><table><thead><tr><th>商户</th><th>代码</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : emptyState('building-2', '暂无商户', '创建第一个商户后即可配置程序。', `<button class="button" type="button" data-action="create-merchant">${icon('plus')}新建商户</button>`)}
-    </div>`;
-}
-
-async function renderApplications() {
-  const merchant = store.merchant;
-  if (!merchant) {
-    return `${pageHeader('程序', '程序与授权策略')}${emptyState('boxes', '未选择商户', '请先创建或选择商户。')}`;
-  }
-  const rows = store.value.applications.map((application) => `<tr>
-    <td><span class="cell-primary">${escapeHtml(application.name)}</span><span class="cell-secondary mono">${escapeHtml(application.id.slice(0, 8))}</span></td>
-    <td class="mono">${escapeHtml(application.code)}</td>
-    <td>${statusBadge(application.status)}</td>
-    <td>${application.settings.defaultDurationDays} 天 / ${deviceLimitText(application.settings.defaultMaxDevices)}</td>
-    <td>${application.settings.heartbeatSeconds} 秒</td>
-    <td><div class="inline-actions">
-      <button class="button secondary small" type="button" data-action="select-app" data-id="${escapeHtml(application.id)}">卡密</button>
-      <button class="button secondary small" type="button" data-action="download-client-config" data-format="json" data-id="${escapeHtml(application.id)}" data-code="${escapeHtml(application.code)}">JSON</button>
-      <button class="button secondary small" type="button" data-action="download-client-config" data-format="hpp" data-id="${escapeHtml(application.id)}" data-code="${escapeHtml(application.code)}">HPP</button>
-      ${isOwner() ? `<button class="icon-button" type="button" data-action="toggle-app" data-id="${escapeHtml(application.id)}" data-status="${escapeHtml(application.status)}" aria-label="${application.status === 'active' ? '禁用' : '启用'}程序" title="${application.status === 'active' ? '禁用' : '启用'}">${icon(application.status === 'active' ? 'ban' : 'circle-check')}</button>` : ''}
-    </div></td>
-  </tr>`).join('');
-  const createButton = isOwner()
-    ? `<button class="button" type="button" data-action="create-app">${icon('plus')}新建程序</button>`
-    : '';
-  return `${pageHeader('程序', merchant.name, createButton)}
-    <div class="table-frame">
-      ${rows ? `<div class="table-scroll"><table><thead><tr><th>程序</th><th>代码</th><th>状态</th><th>默认授权</th><th>心跳</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : emptyState('boxes', '暂无程序', '当前商户还没有程序。', createButton)}
-    </div>`;
-}
-
-async function renderLicenses() {
-  const application = store.application;
-  const appSelector = `<select class="select" id="license-app-context" aria-label="当前程序">
-    ${store.value.applications.length ? store.value.applications.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === store.value.selectedAppId ? 'selected' : ''}>${escapeHtml(item.name)} · ${escapeHtml(item.code)}</option>`).join('') : '<option value="">暂无程序</option>'}
-  </select>`;
-  if (!application) {
-    return `${pageHeader('卡密', '卡密与设备绑定')}${emptyState('key-round', '暂无程序', '请先创建程序。', isOwner() ? `<button class="button" type="button" data-view="applications">${icon('plus')}新建程序</button>` : '')}`;
-  }
-  const query = new URLSearchParams({ page: String(store.value.licensePage), limit: '20' });
-  if (store.value.licenseStatus) query.set('status', store.value.licenseStatus);
-  if (store.value.licenseSearch) query.set('key', store.value.licenseSearch);
-  const data = await api.get(`/api/v1/apps/${encodeURIComponent(application.id)}/licenses?${query}`);
-  const rows = data.items.map((license) => `<tr>
-    <td><span class="cell-primary mono">${escapeHtml(license.keyPreview)}</span><span class="cell-secondary mono">${escapeHtml(license.id.slice(0, 8))}</span></td>
-    <td>${statusBadge(license.status)}</td>
-    <td>${license.durationDays ? `${license.durationDays} 天` : formatDate(license.fixedExpiresAt, { dateOnly: true })}</td>
-    <td>${deviceLimitText(license.maxDevices)}</td>
-    <td>${formatDate(license.expiresAt)}</td>
-    <td><div class="inline-actions">
-      <button class="icon-button" type="button" data-action="show-devices" data-id="${escapeHtml(license.id)}" aria-label="查看设备" title="设备">${icon('monitor-smartphone')}</button>
-      ${license.status !== 'expired' ? `<button class="icon-button" type="button" data-action="toggle-license" data-id="${escapeHtml(license.id)}" data-status="${escapeHtml(license.status)}" aria-label="${license.status === 'disabled' ? '启用' : '禁用'}卡密" title="${license.status === 'disabled' ? '启用' : '禁用'}">${icon(license.status === 'disabled' ? 'circle-check' : 'ban')}</button>` : ''}
-    </div></td>
-  </tr>`).join('');
-  return `${pageHeader('卡密', application.name, `<button class="button" type="button" data-action="generate-licenses" ${application.status === 'active' ? '' : 'disabled'}>${icon('plus')}生成卡密</button>`)}
-    <div class="toolbar section-header">
-      <div class="inline-actions">${appSelector}
-        <select class="select" id="license-status-filter" aria-label="卡密状态">
-          <option value="">全部状态</option>
-          ${['pending', 'active', 'disabled', 'expired'].map((status) => `<option value="${status}" ${store.value.licenseStatus === status ? 'selected' : ''}>${escapeHtml({ pending: '未激活', active: '启用', disabled: '已禁用', expired: '已到期' }[status])}</option>`).join('')}
-        </select>
-      </div>
-      <form class="inline-actions" id="license-search-form">
-        <label class="field-label" for="license-search">精确卡密</label>
-        <input class="input mono" id="license-search" name="key" value="${escapeHtml(store.value.licenseSearch)}" placeholder="KMXT-...">
-        <button class="icon-button" type="submit" aria-label="查询卡密" title="查询">${icon('search')}</button>
-      </form>
-    </div>
-    <div class="table-frame">
-      ${rows ? `<div class="table-scroll"><table><thead><tr><th>卡密</th><th>状态</th><th>有效期</th><th>设备上限</th><th>到期时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : emptyState('key-round', '暂无卡密', '当前筛选条件下没有卡密。')}
-      ${pagination(data, 'license-page')}
-    </div>`;
-}
-
-function formatPrice(cents) {
-  return cents === 0 ? '人工确认' : `¥ ${(cents / 100).toFixed(2)}`;
-}
-
-async function renderProducts() {
-  const merchant = store.merchant;
-  const application = store.application;
-  const appSelector = `<select class="select" id="product-app-context" aria-label="当前程序">
-    ${store.value.applications.length ? store.value.applications.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === store.value.selectedAppId ? 'selected' : ''}>${escapeHtml(item.name)} · ${escapeHtml(item.code)}</option>`).join('') : '<option value="">暂无程序</option>'}
-  </select>`;
-  if (!merchant || !application) {
-    return `${pageHeader('商品', '用户购买套餐')}${emptyState('shopping-bag', '暂无程序', '请先创建或选择程序。')}`;
-  }
-  const products = await api.get(`/api/v1/apps/${encodeURIComponent(application.id)}/products`);
-  store.patch({ products });
-  const rows = products.map((product) => `<tr>
-    <td><span class="cell-primary">${escapeHtml(product.name)}</span><span class="cell-secondary">${escapeHtml(product.description || '-')}</span></td>
-    <td>${escapeHtml(formatPrice(product.priceCents))}</td>
-    <td>${product.durationDays} 天</td>
-    <td>${deviceLimitText(product.maxDevices)}</td>
-    <td>${statusBadge(product.status)}</td>
-    <td><div class="inline-actions">
-      ${isOwner() ? `<button class="icon-button" type="button" data-action="edit-product" data-id="${escapeHtml(product.id)}" aria-label="编辑商品" title="编辑">${icon('pencil')}</button>
-      <button class="icon-button" type="button" data-action="toggle-product" data-id="${escapeHtml(product.id)}" data-status="${escapeHtml(product.status)}" aria-label="${product.status === 'active' ? '禁用' : '启用'}商品" title="${product.status === 'active' ? '禁用' : '启用'}">${icon(product.status === 'active' ? 'ban' : 'circle-check')}</button>` : ''}
-    </div></td>
-  </tr>`).join('');
-  const actions = `<a class="button secondary" href="/store/${encodeURIComponent(merchant.code)}" target="_blank" rel="noopener">${icon('external-link')}打开店铺</a>
-    ${isOwner() ? `<button class="button" type="button" data-action="create-product">${icon('plus')}新建商品</button>` : ''}`;
-  return `${pageHeader('商品', application.name, actions)}
-    <div class="toolbar section-header"><div class="inline-actions">${appSelector}</div></div>
-    <div class="table-frame">
-      ${rows ? `<div class="table-scroll"><table><thead><tr><th>商品</th><th>标价</th><th>授权时长</th><th>设备上限</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : emptyState('shopping-bag', '暂无商品', '当前程序还没有购买套餐。', isOwner() ? `<button class="button" type="button" data-action="create-product">${icon('plus')}新建商品</button>` : '')}
-    </div>`;
-}
-
-async function renderOrders() {
-  const merchant = store.merchant;
-  if (!merchant) {
-    return `${pageHeader('订单', '人工审核与发卡')}${emptyState('receipt-text', '未选择商户', '请先创建或选择商户。')}`;
-  }
-  const query = new URLSearchParams({ page: String(store.value.orderPage), limit: '20' });
-  if (store.value.orderStatus) query.set('status', store.value.orderStatus);
-  const data = await api.get(`/api/v1/merchants/${encodeURIComponent(merchant.id)}/orders?${query}`);
-  store.patch({ orders: data.items });
-  const rows = data.items.map((order) => `<tr>
-    <td><span class="cell-primary mono">${escapeHtml(order.orderNo)}</span><span class="cell-secondary">${formatDate(order.createdAt)}</span></td>
-    <td><span class="cell-primary">${escapeHtml(order.product.name)}</span><span class="cell-secondary">${escapeHtml(order.product.applicationName)}</span></td>
-    <td><span class="cell-primary">${escapeHtml(order.customerName || '未填写')}</span><span class="cell-secondary">${escapeHtml(order.contact)}</span></td>
-    <td>${statusBadge(order.status, { pending: '待处理', fulfilled: '已发卡', rejected: '已拒绝' }[order.status])}</td>
-    <td>${order.licenseKey ? `<button class="icon-button" type="button" data-action="copy-order-license" data-value="${escapeHtml(order.licenseKey)}" aria-label="复制卡密" title="复制卡密">${icon('copy')}</button>` : '-'}</td>
-    <td><div class="inline-actions">
-      ${order.status === 'pending' ? `<button class="button small" type="button" data-action="fulfill-order" data-id="${escapeHtml(order.id)}">${icon('package-check')}发卡</button><button class="button secondary small" type="button" data-action="reject-order" data-id="${escapeHtml(order.id)}">拒绝</button>` : '-'}
-    </div></td>
-  </tr>`).join('');
-  return `${pageHeader('订单', merchant.name)}
-    <div class="toolbar section-header">
-      <select class="select" id="order-status-filter" aria-label="订单状态">
-        <option value="">全部状态</option>
-        ${['pending', 'fulfilled', 'rejected'].map((status) => `<option value="${status}" ${store.value.orderStatus === status ? 'selected' : ''}>${escapeHtml({ pending: '待处理', fulfilled: '已发卡', rejected: '已拒绝' }[status])}</option>`).join('')}
-      </select>
-    </div>
-    <div class="table-frame">
-      ${rows ? `<div class="table-scroll"><table><thead><tr><th>订单</th><th>商品</th><th>客户</th><th>状态</th><th>卡密</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : emptyState('receipt-text', '暂无订单', '当前筛选条件下没有订单。')}
-      ${pagination(data, 'order-page')}
-    </div>`;
-}
-
-async function renderUsers() {
-  const merchant = store.merchant;
-  if (!merchant) {
-    return `${pageHeader('账号', '商户账号与角色')}${emptyState('users', '未选择商户', '请先创建或选择商户。')}`;
-  }
-  const users = await api.get(`/api/v1/merchants/${encodeURIComponent(merchant.id)}/users`);
-  const rows = users.map((user) => `<tr>
-    <td><span class="cell-primary">${escapeHtml(user.displayName)}</span><span class="cell-secondary mono">${escapeHtml(user.id.slice(0, 8))}</span></td>
-    <td>${escapeHtml(user.username)}</td>
-    <td>${escapeHtml(roleLabel(user.role))}</td>
-    <td>${statusBadge(user.status)}</td>
-    <td>${formatDate(user.lastLoginAt)}</td>
-    <td>${formatDate(user.createdAt)}</td>
-    <td>${user.id === store.value.user.id ? '<span class="cell-secondary">当前账号</span>' : `<button class="icon-button" type="button" data-action="reset-user-password" data-id="${escapeHtml(user.id)}" data-username="${escapeHtml(user.username)}" aria-label="重置 ${escapeHtml(user.username)} 的密码" title="重置密码">${icon('key-round')}</button>`}</td>
-  </tr>`).join('');
-  return `${pageHeader('账号', merchant.name, `<button class="button" type="button" data-action="create-user">${icon('plus')}新建账号</button>`)}
-    <div class="table-frame"><div class="table-scroll"><table><thead><tr><th>账号</th><th>用户名</th><th>角色</th><th>状态</th><th>最后登录</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
-}
-
-async function renderLogs() {
-  const merchant = store.merchant;
-  const application = store.application;
-  const canAudit = isOwner();
-  if (!canAudit && store.value.logMode === 'audit') {
-    store.patch({ logMode: 'verification' });
-  }
-  const mode = store.value.logMode;
-  let data = { items: [], total: 0, page: store.value.logPage, limit: 20 };
-  if (mode === 'audit' && merchant) {
-    data = await api.get(`/api/v1/merchants/${encodeURIComponent(merchant.id)}/audit-logs?page=${store.value.logPage}&limit=20`);
-  } else if (mode === 'verification' && application) {
-    data = await api.get(`/api/v1/apps/${encodeURIComponent(application.id)}/verification-logs?page=${store.value.logPage}&limit=20`);
-  }
-  const controls = `<div class="segmented" role="tablist" aria-label="日志类型">
-    ${canAudit ? `<button class="segment ${mode === 'audit' ? 'active' : ''}" type="button" data-action="log-mode" data-mode="audit" role="tab" aria-selected="${mode === 'audit'}">管理审计</button>` : ''}
-    <button class="segment ${mode === 'verification' ? 'active' : ''}" type="button" data-action="log-mode" data-mode="verification" role="tab" aria-selected="${mode === 'verification'}">程序验证</button>
-  </div>`;
-  const rows = data.items.map((entry) => mode === 'audit'
-    ? `<tr><td class="cell-primary">${escapeHtml(entry.action)}</td><td>${escapeHtml(entry.actorUsername)}</td><td>${escapeHtml(entry.resourceType)}</td><td class="mono">${escapeHtml(entry.resourceId?.slice(0, 8) || '-')}</td><td>${formatDate(entry.createdAt)}</td></tr>`
-    : `<tr><td class="cell-primary">${escapeHtml(entry.event === 'activate' ? '激活' : '心跳')}</td><td class="mono">${escapeHtml(entry.licenseId.slice(0, 8))}</td><td class="mono">${escapeHtml(entry.bindingId.slice(0, 8))}</td><td>${escapeHtml(entry.clientVersion || '-')}</td><td>${formatDate(entry.createdAt)}</td></tr>`).join('');
-  const missingContext = mode === 'audit' ? !merchant : !application;
-  return `${pageHeader('日志', mode === 'audit' ? (merchant?.name || '管理审计') : (application?.name || '程序验证'), controls)}
-    <div class="table-frame">
-      ${rows ? `<div class="table-scroll"><table><thead><tr>${mode === 'audit' ? '<th>操作</th><th>执行账号</th><th>资源</th><th>资源 ID</th><th>时间</th>' : '<th>事件</th><th>卡密 ID</th><th>绑定 ID</th><th>版本</th><th>时间</th>'}</tr></thead><tbody>${rows}</tbody></table></div>` : emptyState('scroll-text', '暂无日志', missingContext ? '请先选择对应的商户或程序。' : '当前范围内没有日志。')}
-      ${pagination(data, 'log-page')}
-    </div>`;
 }
 
 async function reloadContext(merchantId) {
@@ -560,6 +332,25 @@ function openCreateMerchant() {
       store.patch({ merchants: [...store.value.merchants, merchant] });
       await reloadContext(merchant.id);
       showToast('商户已创建。');
+      renderShell();
+      await renderCurrentView();
+    },
+  });
+}
+
+function openEditMerchant(merchant) {
+  if (!isPlatformAdmin() || !merchant) return;
+  openFormDialog({
+    title: '编辑商户资料',
+    submitLabel: '保存资料',
+    content: `<div class="form-stack">
+      <div class="field"><label for="merchant-edit-name">商户名称</label><input class="input" id="merchant-edit-name" name="name" minlength="2" maxlength="100" value="${escapeHtml(merchant.name)}" required autofocus></div>
+      <div class="field"><label for="merchant-edit-code">商户代码</label><input class="input mono" id="merchant-edit-code" value="${escapeHtml(merchant.code)}" readonly aria-readonly="true"><span class="field-hint">商户代码是唯一标识，创建后不能修改。</span></div>
+    </div>`,
+    onSubmit: async (form) => {
+      const updated = await api.patch(`/api/v1/platform/merchants/${encodeURIComponent(merchant.id)}`, { name: form.get('name') });
+      store.patch({ merchants: store.value.merchants.map((item) => item.id === updated.id ? updated : item) });
+      showToast('商户资料已保存。');
       renderShell();
       await renderCurrentView();
     },
@@ -684,6 +475,41 @@ function openCreateApplication() {
   });
 }
 
+function openEditApplication(application) {
+  if (!application || !isOwner()) return;
+  const settings = application.settings;
+  openFormDialog({
+    title: '编辑程序设置',
+    submitLabel: '保存设置',
+    wide: true,
+    content: `<div class="form-grid">
+      <div class="field"><label for="app-edit-name">程序名称</label><input class="input" id="app-edit-name" name="name" minlength="2" maxlength="100" value="${escapeHtml(application.name)}" required autofocus></div>
+      <div class="field"><label for="app-edit-code">程序代码</label><input class="input mono" id="app-edit-code" value="${escapeHtml(application.code)}" readonly aria-readonly="true"><span class="field-hint">程序代码和签名密钥不会在此页面修改。</span></div>
+      <div class="field full"><label for="app-edit-description">说明</label><textarea class="textarea" id="app-edit-description" name="description" maxlength="500">${escapeHtml(application.description || '')}</textarea></div>
+      <div class="field"><label for="app-edit-days">默认授权天数</label><input class="input" id="app-edit-days" name="defaultDurationDays" type="number" min="1" max="3650" value="${settings.defaultDurationDays}" required></div>
+      <div class="field"><label for="app-edit-devices">默认设备数（0 表示无限制）</label><input class="input" id="app-edit-devices" name="defaultMaxDevices" type="number" min="0" max="20" value="${settings.defaultMaxDevices}" required></div>
+      <div class="field"><label for="app-edit-heartbeat">心跳间隔（秒）</label><input class="input" id="app-edit-heartbeat" name="heartbeatSeconds" type="number" min="30" max="86400" value="${settings.heartbeatSeconds}" required></div>
+      <div class="field"><label for="app-edit-offline">离线宽限（秒）</label><input class="input" id="app-edit-offline" name="offlineGraceSeconds" type="number" min="60" max="604800" value="${settings.offlineGraceSeconds}" required></div>
+    </div>`,
+    onSubmit: async (form) => {
+      const updated = await api.patch(`/api/v1/apps/${encodeURIComponent(application.id)}`, {
+        name: form.get('name'),
+        description: form.get('description') || '',
+        settings: {
+          defaultDurationDays: Number(form.get('defaultDurationDays')),
+          defaultMaxDevices: Number(form.get('defaultMaxDevices')),
+          heartbeatSeconds: Number(form.get('heartbeatSeconds')),
+          offlineGraceSeconds: Number(form.get('offlineGraceSeconds')),
+        },
+      });
+      store.patch({ applications: store.value.applications.map((item) => item.id === updated.id ? updated : item) });
+      showToast('程序设置已保存，签名密钥未变更。');
+      renderShell();
+      await renderCurrentView();
+    },
+  });
+}
+
 function openProductForm(product = null) {
   const application = store.application;
   if (!application || !isOwner()) return;
@@ -781,6 +607,25 @@ function openGenerateLicenses() {
   });
 }
 
+async function showLicenseBatches(appId) {
+  const data = await api.get(`/api/v1/apps/${encodeURIComponent(appId)}/license-batches?page=1&limit=100`);
+  const rows = data.items.map((batch) => `<tr>
+    <td><span class="cell-primary">${escapeHtml(batch.name || '未命名批次')}</span><span class="cell-secondary mono">${escapeHtml(batch.id.slice(0, 8))}</span></td>
+    <td>${batch.count}</td>
+    <td>${batch.durationDays ? `${batch.durationDays} 天` : formatDate(batch.fixedExpiresAt, { dateOnly: true })}</td>
+    <td>${deviceLimitText(batch.maxDevices)}</td>
+    <td>${escapeHtml(batch.source || 'manual')}</td>
+    <td>${formatDate(batch.createdAt)}</td>
+  </tr>`).join('');
+  openContentDialog({
+    title: `卡密批次 · 共 ${data.total} 条`,
+    wide: true,
+    content: rows
+      ? `<div class="table-frame"><div class="table-scroll"><table><thead><tr><th>批次</th><th>数量</th><th>有效期</th><th>设备上限</th><th>来源</th><th>创建时间</th></tr></thead><tbody>${rows}</tbody></table></div></div><p class="field-hint">批次记录不显示卡密明文；授权管理员可在卡密列表中单独查看，且操作会被审计。</p>`
+      : emptyState('key-round', '暂无批次', '当前程序尚未生成卡密批次。'),
+  });
+}
+
 function showGeneratedKeys(result) {
   const keys = result.licenses.map((license) => license.key).join('\n');
   const dialog = openContentDialog({
@@ -809,10 +654,35 @@ function showGeneratedKeys(result) {
   });
 }
 
+// Author: 花落. License device management UI is provided under the MIT License.
+async function showLicenseKey(licenseId) {
+  const result = await api.post(`/api/v1/licenses/${encodeURIComponent(licenseId)}/reveal-key`, {});
+  const key = result.key;
+  const dialog = openContentDialog({
+    title: '完整卡密',
+    content: `<div class="form-stack">
+      <p class="field-hint">此查看操作已写入审计记录，请仅在安全环境中复制和交付。</p>
+      <div class="field"><label for="revealed-license-key">卡密明文</label><textarea class="generated-keys" id="revealed-license-key" readonly>${escapeHtml(key)}</textarea></div>
+    </div>`,
+    footer: `<button class="button" type="button" data-revealed-key-action="copy">${icon('copy')}复制卡密</button>`,
+  });
+  dialog.addEventListener('click', async (event) => {
+    if (event.target.closest('[data-revealed-key-action]')?.dataset.revealedKeyAction !== 'copy') return;
+    try {
+      await navigator.clipboard.writeText(key);
+    } catch {
+      dialog.querySelector('#revealed-license-key').select();
+      document.execCommand('copy');
+    }
+    showToast('卡密已复制。');
+  });
+}
+
 async function showDevices(licenseId) {
   setBusy(true);
   try {
     const devices = await api.get(`/api/v1/licenses/${encodeURIComponent(licenseId)}/devices`);
+    const activeDeviceCount = devices.filter((device) => device.status === 'active').length;
     const rows = devices.map((device) => `<tr>
       <td><span class="cell-primary">${escapeHtml(device.deviceLabel || '未命名设备')}</span><span class="cell-secondary mono">${escapeHtml(device.id.slice(0, 8))}</span></td>
       <td>${statusBadge(device.status)}</td><td>${formatDate(device.boundAt)}</td><td>${formatDate(device.lastVerifiedAt)}</td>
@@ -822,6 +692,9 @@ async function showDevices(licenseId) {
       title: '设备绑定',
       wide: true,
       content: rows ? `<div class="table-frame"><div class="table-scroll"><table><thead><tr><th>设备</th><th>状态</th><th>绑定时间</th><th>最后验证</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div></div>` : emptyState('monitor-smartphone', '暂无设备', '该卡密尚未绑定设备。'),
+      footer: activeDeviceCount > 0
+        ? `<button class="button danger" type="button" data-action="unbind-all-devices" data-id="${escapeHtml(licenseId)}">${icon('unlink')}解绑全部设备</button>`
+        : '',
     });
   } catch (error) {
     showToast(friendlyError(error), 'error');
@@ -878,12 +751,26 @@ document.addEventListener('click', async (event) => {
     openChangePassword();
   } else if (action === 'reset-user-password') {
     openResetUserPassword(id, username);
+  } else if (action === 'toggle-user') {
+    const nextStatus = status === 'active' ? 'disabled' : 'active';
+    const confirmed = nextStatus === 'active' || await confirmAction({ title: '停用账号', message: '该账号的全部管理会话将立即失效。', confirmLabel: '确认停用' });
+    if (confirmed) await performAction(async () => {
+      const result = await api.patch(`/api/v1/users/${encodeURIComponent(id)}/status`, { status: nextStatus });
+      showToast(nextStatus === 'active' ? '账号已启用。' : `账号已停用，已撤销 ${result.sessionsRevoked} 个会话。`);
+      await renderCurrentView();
+    });
   } else if (action === 'create-merchant') {
     openCreateMerchant();
+  } else if (action === 'edit-merchant') {
+    const merchant = store.value.merchants.find((item) => item.id === id);
+    if (merchant) openEditMerchant(merchant);
   } else if (action === 'create-user') {
     openCreateUser();
   } else if (action === 'create-app') {
     openCreateApplication();
+  } else if (action === 'edit-app') {
+    const application = store.value.applications.find((item) => item.id === id);
+    if (application) openEditApplication(application);
   } else if (action === 'create-product') {
     openProductForm();
   } else if (action === 'edit-product') {
@@ -891,6 +778,8 @@ document.addEventListener('click', async (event) => {
     if (product) openProductForm(product);
   } else if (action === 'generate-licenses') {
     openGenerateLicenses();
+  } else if (action === 'show-license-batches') {
+    await performAction(() => showLicenseBatches(id));
   } else if (action === 'select-merchant') {
     await performAction(async () => {
       await reloadContext(id);
@@ -900,7 +789,7 @@ document.addEventListener('click', async (event) => {
       await renderCurrentView();
     });
   } else if (action === 'select-app') {
-    store.patch({ selectedAppId: id, licensePage: 1, view: 'licenses' });
+    store.patch({ selectedAppId: id, licensePage: 1, selectedLicenseIds: [], view: 'licenses' });
     location.hash = 'licenses';
     renderShell();
     await renderCurrentView();
@@ -942,6 +831,34 @@ document.addEventListener('click', async (event) => {
       showToast(nextStatus === 'active' ? '卡密已启用。' : '卡密已禁用。');
       await renderCurrentView();
     });
+  } else if (action === 'reveal-license-key') {
+    const confirmed = await confirmAction({ title: '查看完整卡密', message: '完整卡密将显示在当前页面，本次查看会写入审计记录。', confirmLabel: '确认查看' });
+    if (confirmed) await performAction(() => showLicenseKey(id));
+  } else if (action === 'delete-license') {
+    const confirmed = await confirmAction({ title: '删除卡密', message: '删除后将撤销该卡密全部会话并清除设备绑定和验证记录，此操作不可恢复。已关联订单的卡密不能删除。', confirmLabel: '确认删除' });
+    if (confirmed) await performAction(async () => {
+      const result = await api.delete(`/api/v1/licenses/${encodeURIComponent(id)}`);
+      store.patch({ selectedLicenseIds: (store.value.selectedLicenseIds || []).filter((licenseId) => licenseId !== id) });
+      showToast(`卡密已删除，已清理 ${result.deletedBindings} 条设备绑定。`);
+      await renderCurrentView();
+    });
+  } else if (action === 'bulk-delete-licenses') {
+    const licenseIds = [...new Set(store.value.selectedLicenseIds || [])];
+    if (!licenseIds.length || !store.application) {
+      showToast('请先选择要删除的卡密。', 'error');
+      return;
+    }
+    const confirmed = await confirmAction({ title: '批量删除卡密', message: `将删除已选 ${licenseIds.length} 个卡密，并撤销对应会话、设备绑定和验证记录。已关联订单的卡密会自动跳过并在结果中提示。`, confirmLabel: '确认批量删除' });
+    if (confirmed) await performAction(async () => {
+      const result = await api.post(`/api/v1/apps/${encodeURIComponent(store.application.id)}/licenses/bulk-delete`, { licenseIds });
+      store.patch({ selectedLicenseIds: [] });
+      const failedCount = result.failed?.length || 0;
+      const message = failedCount
+        ? `已删除 ${result.deletedCount} 个，${failedCount} 个未删除。`
+        : `已删除 ${result.deletedCount} 个卡密，已清理 ${result.deletedBindings} 条设备绑定。`;
+      showToast(message, failedCount ? 'error' : 'success');
+      await renderCurrentView();
+    });
   } else if (action === 'toggle-product') {
     const nextStatus = status === 'active' ? 'disabled' : 'active';
     const confirmed = nextStatus === 'active' || await confirmAction({ title: '禁用商品', message: '店铺将立即停止展示该商品。', confirmLabel: '确认禁用' });
@@ -959,6 +876,9 @@ document.addEventListener('click', async (event) => {
     });
   } else if (action === 'reject-order') {
     openRejectOrder(id);
+  } else if (action === 'clear-order-filters') {
+    store.patch({ orderNo: '', orderFrom: '', orderTo: '', orderStatus: '', orderPage: 1 });
+    await renderCurrentView();
   } else if (action === 'copy-order-license') {
     await performAction(async () => {
       await navigator.clipboard.writeText(button.dataset.value);
@@ -974,8 +894,16 @@ document.addEventListener('click', async (event) => {
       showToast('设备已解绑。');
       await showDevices(licenseId);
     });
+  } else if (action === 'unbind-all-devices') {
+    const confirmed = await confirmAction({ title: '解绑全部设备', message: '该卡密的全部设备会话将立即失效，所有设备之后均需重新激活。', confirmLabel: '确认全部解绑' });
+    if (confirmed) await performAction(async () => {
+      const result = await api.post(`/api/v1/licenses/${encodeURIComponent(id)}/unbind-all`, {});
+      button.closest('dialog')?.close();
+      showToast(`已解绑 ${result.unboundCount} 台设备。`);
+      await showDevices(id);
+    });
   } else if (action === 'license-page-previous' || action === 'license-page-next') {
-    store.patch({ licensePage: Math.max(1, store.value.licensePage + (action.endsWith('next') ? 1 : -1)) });
+    store.patch({ licensePage: Math.max(1, store.value.licensePage + (action.endsWith('next') ? 1 : -1)), selectedLicenseIds: [] });
     await renderCurrentView();
   } else if (action === 'order-page-previous' || action === 'order-page-next') {
     store.patch({ orderPage: Math.max(1, store.value.orderPage + (action.endsWith('next') ? 1 : -1)) });
@@ -985,6 +913,9 @@ document.addEventListener('click', async (event) => {
     await renderCurrentView();
   } else if (action === 'log-mode') {
     store.patch({ logMode: mode, logPage: 1 });
+    await renderCurrentView();
+  } else if (action === 'clear-log-filters') {
+    store.patch({ auditAction: '', verificationEvent: '', verificationResultCode: '', logFrom: '', logTo: '', logPage: 1 });
     await renderCurrentView();
   }
 });
@@ -997,11 +928,35 @@ document.addEventListener('change', async (event) => {
       await renderCurrentView();
     });
   } else if (event.target.id === 'license-app-context') {
-    store.patch({ selectedAppId: event.target.value || null, licensePage: 1 });
+    store.patch({ selectedAppId: event.target.value || null, licensePage: 1, selectedLicenseIds: [] });
     await renderCurrentView();
   } else if (event.target.id === 'license-status-filter') {
-    store.patch({ licenseStatus: event.target.value, licensePage: 1 });
+    store.patch({ licenseStatus: event.target.value, licensePage: 1, selectedLicenseIds: [] });
     await renderCurrentView();
+  } else if (event.target.id === 'license-limit') {
+    const limit = Math.min(100, Math.max(1, Number.parseInt(event.target.value || '20', 10)));
+    store.patch({ licenseLimit: [20, 50, 100].includes(limit) ? limit : 20, licensePage: 1, selectedLicenseIds: [] });
+    await renderCurrentView();
+  } else if (event.target.id === 'license-select-all') {
+    const ids = [...document.querySelectorAll('[data-license-select]')].map((input) => input.value);
+    store.patch({ selectedLicenseIds: event.target.checked ? ids : [] });
+    await renderCurrentView();
+  } else if (event.target.matches('[data-license-select]')) {
+    const selected = new Set(store.value.selectedLicenseIds || []);
+    event.target.checked ? selected.add(event.target.value) : selected.delete(event.target.value);
+    store.patch({ selectedLicenseIds: [...selected] });
+    const button = document.querySelector('[data-action="bulk-delete-licenses"]');
+    if (button) {
+      button.disabled = selected.size === 0;
+      const label = selected.size > 0 ? `批量删除（${selected.size}）` : '批量删除';
+      button.innerHTML = `${icon('trash-2')}${label}`;
+    }
+    const selectAll = document.querySelector('#license-select-all');
+    const boxes = [...document.querySelectorAll('[data-license-select]')];
+    if (selectAll && boxes.length) {
+      selectAll.checked = boxes.every((input) => input.checked);
+      selectAll.indeterminate = boxes.some((input) => input.checked) && !selectAll.checked;
+    }
   } else if (event.target.id === 'product-app-context') {
     store.patch({ selectedAppId: event.target.value || null, products: [] });
     await renderCurrentView();
@@ -1015,7 +970,36 @@ document.addEventListener('submit', async (event) => {
   if (event.target.id === 'license-search-form') {
     event.preventDefault();
     const form = new FormData(event.target);
-    store.patch({ licenseSearch: String(form.get('key') || '').trim(), licensePage: 1 });
+    store.patch({ licenseSearch: String(form.get('key') || '').trim(), licensePage: 1, selectedLicenseIds: [] });
+    await renderCurrentView();
+  } else if (event.target.id === 'order-filter-form') {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const from = String(form.get('from') || '');
+    const to = String(form.get('to') || '');
+    if (from && to && Date.parse(from) > Date.parse(to)) {
+      showToast('结束时间必须晚于开始时间。', 'error');
+      return;
+    }
+    store.patch({ orderNo: String(form.get('orderNo') || '').trim(), orderFrom: from, orderTo: to, orderPage: 1 });
+    await renderCurrentView();
+  } else if (event.target.id === 'log-filter-form') {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const from = String(form.get('from') || '');
+    const to = String(form.get('to') || '');
+    if (from && to && Date.parse(from) > Date.parse(to)) {
+      showToast('结束时间必须晚于开始时间。', 'error');
+      return;
+    }
+    store.patch({
+      auditAction: String(form.get('action') || '').trim(),
+      verificationEvent: String(form.get('event') || ''),
+      verificationResultCode: String(form.get('resultCode') || '').trim(),
+      logFrom: from,
+      logTo: to,
+      logPage: 1,
+    });
     await renderCurrentView();
   }
 });

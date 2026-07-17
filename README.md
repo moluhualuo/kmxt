@@ -1,8 +1,8 @@
 # KMXT 卡密验证服务
 
-KMXT 是一个使用 Node.js 20 开发的多租户卡密服务。当前版本 `0.5.2` 支持 MySQL 8 + Redis 生产存储与 Android NDK SDK。平台可创建多个商户，每个商户可管理多个独立程序；卡密、设备、签名密钥和日志均按 `merchantId` 与 `appId` 隔离。
+KMXT 是一个使用 Node.js 20 开发的多租户卡密服务。当前版本 `0.6.0` 支持 MySQL 8 + Redis 生产存储与 Android NDK SDK。平台可创建多个商户，每个商户可管理多个独立程序；卡密、设备、签名密钥和日志均按 `merchantId` 与 `appId` 隔离。
 
-作者：花落
+作者：花落  
 许可证：MIT
 
 ## 当前功能
@@ -16,7 +16,7 @@ KMXT 是一个使用 Node.js 20 开发的多租户卡密服务。当前版本 `0
 - 短期验证会话与心跳续期
 - 时间戳、Nonce 防重放和接口速率限制
 - 管理审计日志与程序验证日志
-- 卡密摘要存储，程序私钥 AES-256-GCM 加密存储
+- 卡密摘要校验与 AES-256-GCM 加密副本存储，程序私钥 AES-256-GCM 加密存储
 - JSON 开发存储与 MySQL 8 TLS 生产存储
 - Redis 原子 Nonce 与跨进程限流
 - Node.js SDK 及 Android API 24 / arm64-v8a C++17 + Kotlin SDK
@@ -60,7 +60,7 @@ $body = @{ username = 'admin'; password = 'Change-This-Password!' } | ConvertTo-
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/api/v1/auth/login -ContentType application/json -Body $body
 ```
 
-`create-admin` 只允许在不存在平台管理员时执行。卡密明文仅在批量生成接口的响应中出现一次，请立即安全交付或导出。
+`create-admin` 只允许在不存在平台管理员时执行。新生成卡密使用根密钥派生的密钥加密保存；平台管理员或所属商户管理员可在后台显式查看单张卡密，查看会写入审计记录。卡密列表、批次记录和日志不返回明文。
 
 ## 常用命令
 

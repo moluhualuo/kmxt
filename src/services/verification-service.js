@@ -65,6 +65,18 @@ export class VerificationService {
     const sessionToken = createOpaqueToken();
     const sessionDigest = digestSecret(this.rootSecret, 'client-session', sessionToken);
 
+    if (this.store.repositories?.verification) {
+      const activation = await this.store.repositories.verification.activate({
+        appId, licenseDigest, deviceDigest, deviceLabel, clientVersion, sessionDigest,
+        nowMilliseconds, now, clientSessionTtlSeconds: this.config.clientSessionTtlSeconds,
+      });
+      return this.#sign(activation.application, {
+        licensed: true, code: 'LICENSE_VALID', appId, licenseId: activation.licenseId, bindingId: activation.bindingId,
+        sessionToken, issuedAt: now, licenseExpiresAt: activation.licenseExpiresAt, sessionExpiresAt: activation.sessionExpiresAt,
+        heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds, offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
+      });
+    }
+
     const activation = await this.store.transaction((state) => {
       const application = findApplicationOrThrow(state, appId, { requireActive: true });
       findMerchantOrThrow(state, application.merchantId, { requireActive: true });
@@ -188,6 +200,18 @@ export class VerificationService {
     const sessionDigest = digestSecret(this.rootSecret, 'client-session', sessionToken);
     const deviceDigest = digestSecret(this.rootSecret, `device:${appId}`, deviceId);
 
+    if (this.store.repositories?.verification) {
+      const verification = await this.store.repositories.verification.verify({
+        appId, sessionDigest, deviceDigest, clientVersion, nowMilliseconds, now,
+        clientSessionTtlSeconds: this.config.clientSessionTtlSeconds,
+      });
+      return this.#sign(verification.application, {
+        licensed: true, code: 'LICENSE_VALID', appId, licenseId: verification.licenseId, bindingId: verification.bindingId,
+        issuedAt: now, licenseExpiresAt: verification.licenseExpiresAt, sessionExpiresAt: verification.sessionExpiresAt,
+        heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds, offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
+      });
+    }
+
     const verification = await this.store.transaction((state) => {
       const application = findApplicationOrThrow(state, appId, { requireActive: true });
       findMerchantOrThrow(state, application.merchantId, { requireActive: true });
@@ -251,6 +275,7 @@ export class VerificationService {
   }
 
   async #getActiveApplication(appId) {
+    if (this.store.repositories?.verification) return this.store.repositories.verification.getActiveApplication(appId);
     return this.store.read((state) => {
       const application = findApplicationOrThrow(state, appId, { requireActive: true });
       findMerchantOrThrow(state, application.merchantId, { requireActive: true });

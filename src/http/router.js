@@ -86,6 +86,8 @@ export class Router {
 
   async handle(request, responseStream) {
     const requestId = randomUUID();
+    const startedAt = Date.now();
+    let accessUser = null;
     this.#setCommonHeaders(request, responseStream, requestId);
     if (request.method === 'OPTIONS') {
       responseStream.writeHead(204);
@@ -119,6 +121,7 @@ export class Router {
       let user = null;
       if (route.options.auth) {
         user = await this.authService.authenticate(token);
+        accessUser = user;
         if (route.options.roles) {
           assertRole(user, route.options.roles);
         }
@@ -143,9 +146,25 @@ export class Router {
         data: normalized.data,
         requestId,
       }, normalized.headers);
+      this.#logAccess(request, requestId, normalized.status, startedAt, accessUser);
     } catch (error) {
       this.#sendError(responseStream, error, requestId);
+      this.#logAccess(request, requestId, error instanceof AppError ? error.status : 500, startedAt, accessUser);
     }
+  }
+
+  #logAccess(request, requestId, status, startedAt, user) {
+    // Author: 花落. Metadata-only access logs are MIT licensed and intentionally exclude secrets.
+    console.log(JSON.stringify({
+      type: 'http_access',
+      requestId,
+      method: request.method,
+      path: String(request.url || '').split('?')[0],
+      status,
+      durationMs: Date.now() - startedAt,
+      actor: user ? { id: user.id, role: user.role, merchantId: user.merchantId } : null,
+      time: new Date().toISOString(),
+    }));
   }
 
   #setCommonHeaders(request, responseStream, requestId) {
@@ -195,7 +214,7 @@ export class Router {
       },
       requestId,
     };
-    const headers = (status === 429 || status === 503) && error.details?.retryAfter
+    const headers = status === 429 && error.details?.retryAfter
       ? { 'Retry-After': String(error.details.retryAfter) }
       : {};
     this.#sendJson(responseStream, status, payload, headers);

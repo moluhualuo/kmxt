@@ -33,6 +33,9 @@ Usage:
   node cli/kmxt.js create-admin --username <name> --password <password> [--display-name <name>]
   node cli/kmxt.js serve [--host 127.0.0.1] [--port 8080]
   node cli/kmxt.js status
+  node cli/kmxt.js doctor
+  node cli/kmxt.js cleanup-sessions
+  node cli/kmxt.js cleanup-verification-logs --retention-days <days>
 `);
 }
 
@@ -88,17 +91,40 @@ if (command === 'create-admin') {
 }
 
 if (command === 'status') {
-  const summary = await runtime.store.read((state) => ({
-    schemaVersion: state.schemaVersion,
-    merchants: state.merchants.length,
-    applications: state.applications.length,
-    products: state.products.length,
-    orders: state.orders.length,
-    licenses: state.licenses.length,
-    users: state.users.length,
-    updatedAt: state.meta.updatedAt,
-  }));
+  const summary = typeof runtime.store.statusSummary === 'function'
+    ? await runtime.store.statusSummary()
+    : await runtime.store.read((state) => ({
+      schemaVersion: state.schemaVersion,
+      merchants: state.merchants.length,
+      applications: state.applications.length,
+      products: state.products.length,
+      orders: state.orders.length,
+      licenses: state.licenses.length,
+      users: state.users.length,
+      updatedAt: state.meta.updatedAt,
+    }));
   console.log(JSON.stringify(summary, null, 2));
+  await runtime.close();
+  process.exit(0);
+}
+
+if (command === 'doctor') {
+  const checks = await runtime.services.readiness.check();
+  console.log(JSON.stringify({ healthy: Object.values(checks).every(Boolean), node: process.version, storageDriver: runtime.config.storageDriver, checks }, null, 2));
+  await runtime.close();
+  process.exit(0);
+}
+
+if (command === 'cleanup-sessions') {
+  console.log(JSON.stringify(await runtime.services.maintenance.cleanupSessions(), null, 2));
+  await runtime.close();
+  process.exit(0);
+}
+
+if (command === 'cleanup-verification-logs') {
+  const retentionDays = Number.parseInt(args['retention-days'], 10);
+  if (!Number.isSafeInteger(retentionDays)) throw new Error('--retention-days must be an integer');
+  console.log(JSON.stringify(await runtime.services.maintenance.cleanupVerificationLogs(retentionDays), null, 2));
   await runtime.close();
   process.exit(0);
 }

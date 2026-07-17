@@ -77,3 +77,4 @@ export function parsePagination(searchParams, maximumLimit = 100) {
   }
   return { page, limit, offset: (page - 1) * limit };
 }
+

@@ -10,6 +10,11 @@ export class StateStore {
     throw new Error('StateStore.transaction must be implemented');
   }
 
+  async ping() {
+    await this.read(() => true);
+    return true;
+  }
+
   async close() {}
 }
 

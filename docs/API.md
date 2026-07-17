@@ -1,8 +1,8 @@
 # API 文档
 
-版本：`v1`
-服务版本：`0.5.2`
-作者：花落
+版本：`v1`  
+服务版本：`0.6.0`  
+作者：花落  
 协议：MIT
 
 ## 通用约定
@@ -77,6 +77,10 @@ Authorization: Bearer <admin-token>
 
 ## 健康检查
 
+### `GET /ready`
+
+无需认证。执行存储、Redis/安全状态与根密钥就绪检查；详细响应和 0.6.0 管理接口见 `docs/PRODUCTIZATION_060.md`。
+
 ### `GET /health`
 
 无需认证。返回服务版本和服务器时间。
@@ -87,7 +91,7 @@ Authorization: Bearer <admin-token>
   "data": {
     "status": "ok",
     "service": "kmxt-license-server",
-    "version": "0.5.2",
+    "version": "0.6.0",
     "time": "2026-07-13T08:00:00.000Z"
   },
   "requestId": "..."
@@ -107,7 +111,7 @@ Authorization: Bearer <admin-token>
 }
 ```
 
-响应中的 `token` 是只出现一次的 Bearer 令牌，默认 8 小时到期。
+响应中的 `token` 是只出现一次的 Bearer 令牌，默认 8 小时到期。账号失败计数仅在会话实际创建成功后清除；密码错误、账号停用或所属商户停用都不会清除该计数。
 
 ```json
 {
@@ -297,7 +301,7 @@ Authorization: Bearer <admin-token>
 
 `durationDays` 和 `fixedExpiresAt` 不能同时提供。未提供时使用程序默认天数和设备数；`maxDevices=0` 表示设备绑定无上限。
 
-返回 `201`。`licenses[].key` 是唯一一次返回的卡密明文：
+返回 `201`。`licenses[].key` 会在本次生成响应中返回；新卡密同时使用根密钥派生的 AES-256-GCM 密文保存，以便授权管理员后续显式查看。普通卡密列表和批次记录始终只返回预览值：
 
 ```json
 {
@@ -316,7 +320,7 @@ Authorization: Bearer <admin-token>
       "maxDevices": 1
     }
   ],
-  "plaintextNotice": "License keys are returned only by this generation response."
+  "plaintextNotice": "License keys can later be explicitly revealed by an authorized owner."
 }
 ```
 
@@ -331,6 +335,28 @@ Authorization: Bearer <admin-token>
 | `page` | 页码。 |
 | `limit` | 每页数量，最大 100。 |
 
+### `POST /api/v1/apps/:appId/licenses/bulk-delete`
+
+平台管理员或所属商户管理员可调用。请求体最多传入 100 个卡密 ID；服务端会逐个执行与单卡密删除相同的安全检查。能删除的会先删除，已关联订单、跨程序或无权限的卡密会进入 `failed`，不会阻止其他卡密删除。
+
+```json
+{
+  "licenseIds": ["license-uuid-1", "license-uuid-2"]
+}
+```
+
+成功响应：
+
+```json
+{
+  "requestedCount": 2,
+  "deletedCount": 1,
+  "deletedBindings": 0,
+  "deleted": [{ "licenseId": "license-uuid-1", "deletedBindings": 0 }],
+  "failed": [{ "licenseId": "license-uuid-2", "code": "LICENSE_HAS_ORDER", "message": "..." }]
+}
+```
+
 ### `PATCH /api/v1/licenses/:licenseId/status`
 
 启用或禁用卡密。
@@ -343,9 +369,50 @@ Authorization: Bearer <admin-token>
 
 禁用会撤销该卡密全部客户端会话。重新启用后，未激活卡恢复为 `pending`，已激活卡恢复为 `active`；到期卡不能重新启用。
 
+### `POST /api/v1/licenses/:licenseId/reveal-key`
+
+仅平台管理员或所属商户管理员可调用，且必须通过商户隔离校验。接口没有业务请求体，返回该卡密的完整明文：
+
+```json
+{
+  "licenseId": "license-uuid",
+  "key": "KMXT-DESKTOP-XXXXX-XXXXX-XXXXX-XXXXX"
+}
+```
+
+响应设置为 `no-store`，访问日志、审计元数据和卡密列表均不包含明文；每次成功查看都会写入 `license.key.reveal` 审计记录。早于此功能创建且没有加密副本的手工卡密返回 `409 LICENSE_KEY_UNAVAILABLE`，无法由摘要反推出明文。
+
+### `DELETE /api/v1/licenses/:licenseId`
+
+仅平台管理员或所属商户管理员可调用，且必须通过商户隔离校验。删除会立即撤销该卡密的客户端会话，清除其设备绑定及验证日志，保留批次和审计记录：
+
+```json
+{
+  "licenseId": "license-uuid",
+  "deletedBindings": 2
+}
+```
+
+已关联已发卡店铺订单的卡密不能删除，以保持订单交付记录可追溯；此时返回 `409 LICENSE_HAS_ORDER`。每次成功删除写入 `license.delete` 审计记录。
+
 ### `GET /api/v1/licenses/:licenseId/devices`
 
 返回卡密全部设备绑定，包括已解绑历史。设备原始标识不会返回。
+
+### `POST /api/v1/licenses/:licenseId/unbind-all`
+
+任意管理角色，但只能操作自己可访问商户的卡密。接口没有业务请求体，会将该卡密全部处于 `active` 状态的设备绑定改为 `revoked`，撤销该卡密的全部客户端会话，并保留设备绑定历史。客户端需要重新激活后才能继续使用。
+
+成功返回 `200`：
+
+```json
+{
+  "licenseId": "license-uuid",
+  "unboundCount": 2
+}
+```
+
+接口幂等：没有活动设备时仍返回 `200`，且 `unboundCount` 为 `0`；仅在实际解绑时写入一条 `license.devices.unbind_all` 审计记录。
 
 ### `POST /api/v1/device-bindings/:bindingId/unbind`
 
@@ -591,6 +658,7 @@ Authorization: Bearer <admin-token>
 | 409 | `DEVICE_LIMIT_REACHED` | 已达到卡密设备数上限。 |
 | 409 | `PRODUCT_UNAVAILABLE` | 商品、程序或商户不可下单。 |
 | 409 | `ORDER_NOT_PENDING` | 订单已经发卡或拒绝。 |
+| 409 | `ORDER_COLLISION` | 极少数订单号唯一冲突连续重试后仍未获得编号；客户端可安全重试下单请求。 |
 | 409 | `PASSWORD_UNCHANGED` | 新密码与原密码相同。 |
 | 409 | `PASSWORD_CHANGED_RETRY` | 密码被并发请求修改，需重新登录后再试。 |
 | 409 | `USE_SELF_PASSWORD_CHANGE` | 当前账号应使用自助改密接口。 |
@@ -598,4 +666,3 @@ Authorization: Bearer <admin-token>
 | 401 | `ORDER_QUERY_INVALID` | 订单号或查询码错误。 |
 | 413 | `BODY_TOO_LARGE` | 请求体超过配置上限。 |
 | 429 | `RATE_LIMITED` | 请求过多，参考 `Retry-After` 响应头。 |
-| 503 | `STORAGE_UNAVAILABLE` | MySQL 连接暂不可用或存储操作超时；等待 `Retry-After` 指定秒数后重试，写操作不会自动重放。 |
