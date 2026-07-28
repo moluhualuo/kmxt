@@ -4,15 +4,25 @@ function sqlDate(value) { return value ? new Date(value) : null; }
 
 // Author: 花落. MySQL maintenance cleanup and audit summaries are MIT licensed.
 export class MysqlMaintenanceRepository {
-  constructor(pool) { this.pool = pool; }
+  constructor(pool, modelDelivery = null) {
+    this.pool = pool;
+    this.modelDelivery = modelDelivery;
+  }
 
   async cleanupSessions(now = Date.now()) {
     return this.#transaction(async (connection) => {
       const [adminResult] = await connection.execute('DELETE FROM admin_sessions WHERE expires_at <= ?', [new Date(now)]);
       const [clientResult] = await connection.execute('DELETE FROM client_sessions WHERE expires_at <= ?', [new Date(now)]);
+      const expiredModelLeases = this.modelDelivery
+        ? await this.modelDelivery.cleanupExpiredLeases(now, connection)
+        : Number((await connection.execute(
+          'DELETE FROM model_leases WHERE expires_at <= ?',
+          [new Date(now)],
+        ))[0].affectedRows ?? 0);
       const summary = {
         expiredAdminSessions: Number(adminResult.affectedRows ?? 0),
         expiredClientSessions: Number(clientResult.affectedRows ?? 0),
+        expiredModelLeases,
       };
       await this.#audit(connection, 'maintenance.sessions.cleanup', summary, new Date(now).toISOString());
       return summary;

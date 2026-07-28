@@ -3,7 +3,10 @@ import {
   createDecipheriv,
   createHash,
   createHmac,
+  createPublicKey,
+  diffieHellman,
   generateKeyPairSync,
+  hkdfSync,
   randomBytes,
   scrypt,
   sign,
@@ -23,6 +26,15 @@ function encode(buffer) {
 
 function decode(value) {
   return Buffer.from(value, 'base64url');
+}
+
+// Author: 花落. Base64url helpers are shared by the model-lease protocol under MIT.
+export function encodeBase64Url(value) {
+  return encode(value);
+}
+
+export function decodeBase64Url(value) {
+  return decode(value);
 }
 
 function deriveKey(rootSecret, purpose) {
@@ -160,3 +172,43 @@ export function verifySignedEnvelope(envelope, publicKey) {
   );
 }
 
+/**
+ * Wrap a short-lived artifact key for a client X25519 public key.
+ * The server never returns the plaintext key; the caller must prove possession
+ * of the corresponding private key. Author: 花落. MIT License.
+ */
+export function wrapSecretForClient(secret, clientPublicKeyBase64Url, associatedData) {
+  const secretBuffer = Buffer.from(secret);
+  if (secretBuffer.length !== 32) {
+    throw new Error('Artifact key must contain exactly 32 bytes.');
+  }
+  const clientPublicKey = createPublicKey({
+    key: decode(clientPublicKeyBase64Url),
+    format: 'der',
+    type: 'spki',
+  });
+  if (clientPublicKey.asymmetricKeyType !== 'x25519') {
+    throw new Error('Client public key must use X25519.');
+  }
+  const { publicKey, privateKey } = generateKeyPairSync('x25519');
+  const sharedSecret = diffieHellman({ privateKey, publicKey: clientPublicKey });
+  const wrappingKey = Buffer.from(hkdfSync(
+    'sha256',
+    sharedSecret,
+    Buffer.from('kmxt-model-lease-salt', 'utf8'),
+    Buffer.from(String(associatedData), 'utf8'),
+    32,
+  ));
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', wrappingKey, iv);
+  cipher.setAAD(Buffer.from(String(associatedData), 'utf8'));
+  const ciphertext = Buffer.concat([cipher.update(secretBuffer), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    algorithm: 'X25519-HKDF-SHA256-AES-256-GCM',
+    serverEphemeralPublicKey: encode(publicKey.export({ type: 'spki', format: 'der' })),
+    iv: encode(iv),
+    tag: encode(tag),
+    ciphertext: encode(ciphertext),
+  };
+}

@@ -10,6 +10,7 @@ import { MysqlApplicationRepository } from '../src/storage/repositories/mysql-ap
 import { MysqlProductRepository } from '../src/storage/repositories/mysql-product-repository.js';
 import { MysqlAuditRepository } from '../src/storage/repositories/mysql-audit-repository.js';
 import { MysqlMaintenanceRepository } from '../src/storage/repositories/mysql-maintenance-repository.js';
+import { MysqlOnlineDeviceRepository } from '../src/storage/repositories/mysql-online-device-repository.js';
 import { MysqlStore } from '../src/storage/mysql-store.js';
 import { AuthService } from '../src/services/auth-service.js';
 import { LicenseService } from '../src/services/license-service.js';
@@ -17,7 +18,7 @@ import { OrderService } from '../src/services/order-service.js';
 import { MaintenanceService } from '../src/services/maintenance-service.js';
 import { digestSecret, encryptText, hashPassword } from '../src/security/crypto.js';
 
-test('MySQL dashboard repository uses scoped count queries instead of loading payload tables', async () => {
+test('MySQL dashboard repository counts LICENSE_VALID activation and verification records', async () => {
   const calls = [];
   const results = [
     [[{ id: 'merchant-1' }]],
@@ -30,6 +31,81 @@ test('MySQL dashboard repository uses scoped count queries instead of loading pa
   assert.equal(calls.length, 7);
   assert.ok(calls.every((call) => !/payload/i.test(call.sql)));
   assert.ok(calls.some((call) => /orders WHERE merchant_id = \? AND status = 'pending'/.test(call.sql)));
+  const verificationCall = calls.find((call) => call.sql.includes('FROM verification_logs'));
+  assert.match(verificationCall.sql, /SUM\(result_code = \?\)/);
+  assert.match(verificationCall.sql, /event IN \(\?, \?\)/);
+  assert.deepEqual(verificationCall.values.slice(0, -1), ['LICENSE_VALID', 'merchant-1', 'activate', 'verify']);
+  assert.equal(verificationCall.values.at(-1) instanceof Date, true);
+});
+
+test('MySQL online-device repository scopes presence and returns safe device metadata', async () => {
+  const calls = [];
+  const application = { id: 'app-1', merchantId: 'merchant-1', settings: { heartbeatSeconds: 90 } };
+  const binding = {
+    id: 'binding-1', merchantId: 'merchant-1', appId: 'app-1', licenseId: 'license-1',
+    deviceLabel: 'Primary PC', status: 'active', boundAt: '2026-07-18T00:00:00.000Z',
+    lastVerifiedAt: '2026-07-18T00:10:00.000Z', lastClientVersion: '1.2.3', lastIpAddress: '127.0.0.1',
+  };
+  const license = { id: 'license-1', keyPreview: 'KMXT-APP-****-1234' };
+  const session = { bindingId: 'binding-1', lastVerifiedAt: '2026-07-18T00:10:00.000Z', expiresAt: '2026-07-18T00:30:00.000Z', clientVersion: '1.2.3', ipAddress: '127.0.0.1' };
+  const pool = {
+    async execute(sql, values) {
+      calls.push({ sql, values });
+      if (sql.startsWith('SELECT payload, merchant_id FROM applications')) {
+        return [[{ payload: JSON.stringify(application), merchant_id: 'merchant-1' }]];
+      }
+      if (sql.includes('SUM(CASE WHEN')) return [[{ total: 2, online: 1 }]];
+      if (sql.startsWith('SELECT COUNT(*) AS total FROM device_bindings')) return [[{ total: 1 }]];
+      if (sql.startsWith('SELECT db.payload AS binding_payload')) {
+        return [[{ binding_payload: JSON.stringify(binding), license_payload: JSON.stringify(license), session_payload: JSON.stringify(session) }]];
+      }
+      return [[]];
+    },
+  };
+  const repository = new MysqlOnlineDeviceRepository(pool);
+  const result = await repository.list(
+    { role: 'merchant_admin', merchantId: 'merchant-1' },
+    'app-1',
+    { page: 1, limit: 20, offset: 0 },
+    { status: 'online', search: 'primary', nowMilliseconds: Date.parse('2026-07-18T00:11:00.000Z'), fallbackHeartbeatSeconds: 300 },
+  );
+  assert.deepEqual(result.summary, { total: 2, online: 1, offline: 1, onlineWindowSeconds: 180 });
+  assert.equal(result.items[0].online, true);
+  assert.equal(result.items[0].deviceLabel, 'Primary PC');
+  assert.equal(result.items[0].licenseKeyPreview, 'KMXT-APP-****-1234');
+  assert.ok(calls.some((call) => /client_sessions filtered_session/.test(call.sql)));
+  assert.ok(calls.every((call) => !String(call.sql).includes('device_digest')));
+});
+
+test('MySQL verification repository self-unbinds only the matching active device session', async () => {
+  const calls = [];
+  const application = { id: 'app-1', merchantId: 'merchant-1', settings: { heartbeatSeconds: 300 } };
+  const session = { id: 'session-1', appId: 'app-1', bindingId: 'binding-1', expiresAt: '2026-07-18T01:00:00.000Z' };
+  const binding = { id: 'binding-1', merchantId: 'merchant-1', appId: 'app-1', licenseId: 'license-1', deviceDigest: 'device-digest', status: 'active', boundAt: '2026-07-18T00:00:00.000Z' };
+  const connection = {
+    async beginTransaction() {}, async commit() {}, async rollback() {}, release() {},
+    async execute(sql, values) {
+      calls.push({ sql, values });
+      if (sql.startsWith('SELECT merchant_id FROM applications')) return [[{ merchant_id: 'merchant-1' }]];
+      if (sql.startsWith('SELECT status FROM merchants')) return [[{ status: 'active' }]];
+      if (sql.startsWith('SELECT payload, status FROM applications')) return [[{ payload: JSON.stringify(application), status: 'active' }]];
+      if (sql.startsWith('SELECT payload FROM client_sessions')) return [[{ payload: JSON.stringify(session) }]];
+      if (sql.startsWith('SELECT payload FROM device_bindings')) return [[{ payload: JSON.stringify(binding) }]];
+      if (sql.startsWith('DELETE FROM client_sessions')) return [{ affectedRows: 1 }];
+      return [[]];
+    },
+  };
+  const repository = new MysqlVerificationRepository({ async getConnection() { return connection; } });
+  const result = await repository.unbind({
+    appId: 'app-1', sessionDigest: 'session-digest', deviceDigest: 'device-digest',
+    clientVersion: '1.0.0', clientIp: '127.0.0.1',
+    nowMilliseconds: Date.parse('2026-07-18T00:10:00.000Z'), now: '2026-07-18T00:10:00.000Z',
+  });
+  assert.equal(result.bindingId, 'binding-1');
+  assert.equal(result.sessionsRevoked, 1);
+  assert.equal(JSON.parse(calls.find((call) => call.sql.startsWith('UPDATE device_bindings')).values[1]).status, 'revoked');
+  assert.ok(calls.some((call) => call.sql.startsWith('DELETE FROM client_sessions')));
+  assert.ok(calls.some((call) => call.sql.startsWith('INSERT INTO verification_logs')));
 });
 
 test('MySQL activation locks the license and skips device counting for unlimited licenses', async () => {
@@ -518,7 +594,7 @@ test('MySQL maintenance cleanup deletes expired rows and records an audit summar
   };
   const repository = new MysqlMaintenanceRepository({ async getConnection() { return connection; } });
   const result = await repository.cleanupSessions(Date.parse('2026-07-15T00:00:00.000Z'));
-  assert.deepEqual(result, { expiredAdminSessions: 2, expiredClientSessions: 3 });
+  assert.deepEqual(result, { expiredAdminSessions: 2, expiredClientSessions: 3, expiredModelLeases: 0 });
   assert.ok(calls.some((call) => /INSERT INTO audit_logs/.test(call.sql) && JSON.stringify(call.values).includes('maintenance.sessions.cleanup')));
 });
 

@@ -13,7 +13,9 @@ test('schema version 1 upgrades to the current schema without losing collections
 
   const upgraded = upgradeState(legacy);
   assert.equal(upgraded.changed, true);
-  assert.equal(upgraded.state.schemaVersion, 4);
+  assert.equal(upgraded.state.schemaVersion, 5);
+  assert.deepEqual(upgraded.state.modelArtifacts, []);
+  assert.deepEqual(upgraded.state.modelLeases, []);
   assert.deepEqual(upgraded.state.products, []);
   assert.deepEqual(upgraded.state.orders, []);
   assert.equal(upgraded.state.users[0].id, 'preserved-user');

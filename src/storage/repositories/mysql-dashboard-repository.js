@@ -1,7 +1,10 @@
 import { AppError } from '../../core/app-error.js';
 import { Roles } from '../../services/access-control.js';
+import { DASHBOARD_VERIFICATION_EVENTS, DASHBOARD_VERIFICATION_SUCCESS_CODE } from '../../services/dashboard-service.js';
 
 function countOf(rows) { return Number(rows[0]?.total ?? 0); }
+
+const verificationEventPlaceholders = DASHBOARD_VERIFICATION_EVENTS.map(() => '?').join(', ');
 
 // Author: 花落. Direct MySQL dashboard queries are provided under the MIT License.
 export class MysqlDashboardRepository {
@@ -28,13 +31,17 @@ export class MysqlDashboardRepository {
 
     const scope = this.#scope(merchantId, appId);
     const since = new Date(Date.now() - 86400000);
+    const verificationWhere = scope.appWhere || ' WHERE 1 = 1';
     const [merchants, applications, pendingOrders, licenses, activeBindings, verification] = await Promise.all([
       this.pool.execute(`SELECT COUNT(*) AS total FROM merchants${merchantId ? ' WHERE id = ?' : ''}`, merchantId ? [merchantId] : []),
       this.pool.execute(`SELECT COUNT(*) AS total FROM applications${scope.applicationWhere}`, scope.applicationValues),
       this.pool.execute(`SELECT COUNT(*) AS total FROM orders${scope.orderWhere} AND status = 'pending'`, scope.orderValues),
       this.pool.execute(`SELECT COUNT(*) AS total FROM licenses${scope.appWhere}`, scope.appValues),
       this.pool.execute(`SELECT COUNT(*) AS total FROM device_bindings${scope.appWhere} AND status = 'active'`, scope.appValues),
-      this.pool.execute(`SELECT COUNT(*) AS total, COALESCE(SUM(result_code = 'OK'), 0) AS successful FROM verification_logs${scope.appWhere} AND created_at >= ?`, [...scope.appValues, since]),
+      this.pool.execute(
+        `SELECT COUNT(*) AS total, COALESCE(SUM(result_code = ?), 0) AS successful FROM verification_logs${verificationWhere} AND event IN (${verificationEventPlaceholders}) AND created_at >= ?`,
+        [DASHBOARD_VERIFICATION_SUCCESS_CODE, ...scope.appValues, ...DASHBOARD_VERIFICATION_EVENTS, since],
+      ),
     ]);
     const total = countOf(verification[0]);
     const successful = Number(verification[0][0]?.successful ?? 0);

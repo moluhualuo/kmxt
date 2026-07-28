@@ -1,5 +1,8 @@
 import { assertMerchantAccess, findApplicationOrThrow, Roles } from './access-control.js';
 
+export const DASHBOARD_VERIFICATION_EVENTS = Object.freeze(['activate', 'verify']);
+export const DASHBOARD_VERIFICATION_SUCCESS_CODE = 'LICENSE_VALID';
+
 // Author: 花落. Dashboard aggregation is provided under the MIT License.
 export class DashboardService {
   constructor(store) { this.store = store; }
@@ -21,14 +24,18 @@ export class DashboardService {
       const licenses = state.licenses.filter((item) => appIds.has(item.appId));
       const licenseIds = new Set(licenses.map((item) => item.id));
       const since = Date.now() - 86400000;
-      const recent = state.verificationLogs.filter((item) => appIds.has(item.appId) && Date.parse(item.createdAt) >= since);
+      const recent = state.verificationLogs.filter((item) => appIds.has(item.appId)
+        && DASHBOARD_VERIFICATION_EVENTS.includes(item.event)
+        && Date.parse(item.createdAt) >= since);
+      const successful = recent.filter((item) => item.resultCode === DASHBOARD_VERIFICATION_SUCCESS_CODE).length;
       return {
         merchants: merchants.length,
         applications: apps.length,
         pendingOrders: state.orders.filter((item) => merchantIds.has(item.merchantId) && (!filters.appId || item.appId === filters.appId) && item.status === 'pending').length,
         licenses: licenses.length,
         activeBindings: state.deviceBindings.filter((item) => licenseIds.has(item.licenseId) && item.status === 'active').length,
-        verification24h: { total: recent.length, successful: recent.filter((item) => item.resultCode === 'OK').length, failed: recent.filter((item) => item.resultCode !== 'OK').length },
+        // Failed means a recorded activation/verification event without LICENSE_VALID.
+        verification24h: { total: recent.length, successful, failed: recent.length - successful },
       };
     });
   }

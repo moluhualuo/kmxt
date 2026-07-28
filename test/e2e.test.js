@@ -434,6 +434,7 @@ test('multi-tenant license activation and verification workflow', async (context
   });
   assert.equal(activation.status, 200);
   assert.equal(activation.payload.data.payload.licensed, true);
+  assert.equal(activation.payload.data.payload.requestNonce, activationNonce);
   assert.equal(
     verifySignedEnvelope(activation.payload.data, application.signing.publicKey),
     true,
@@ -452,6 +453,7 @@ test('multi-tenant license activation and verification workflow', async (context
   assert.equal(replay.status, 409);
   assert.equal(replay.payload.error.code, 'REPLAY_DETECTED');
 
+  const verificationNonce = nonce('verify');
   const verification = await request(baseUrl, 'POST', '/api/v1/client/verify', {
     body: {
       appId: application.id,
@@ -459,13 +461,28 @@ test('multi-tenant license activation and verification workflow', async (context
       deviceId: 'device-primary-001',
       clientVersion: '1.0.0',
       timestamp: Date.now(),
-      nonce: nonce('verify'),
+      nonce: verificationNonce,
     },
   });
   assert.equal(verification.status, 200);
+  assert.equal(verification.payload.data.payload.requestNonce, verificationNonce);
   assert.equal(verifySignedEnvelope(verification.payload.data, application.signing.publicKey), true);
   const dataAfterActivation = await readFile(path.join(temporaryDirectory, 'kmxt.json'), 'utf8');
   assert.equal(dataAfterActivation.includes('device-primary-001'), false);
+
+  // Author: 花落. Online-device presence and forced disconnect coverage is provided under the MIT License.
+  const onlineDevices = await request(baseUrl, 'GET', `/api/v1/apps/${application.id}/online-devices?status=online&search=Primary&page=1&limit=20`, {
+    token: merchantToken,
+  });
+  assert.equal(onlineDevices.status, 200);
+  assert.equal(onlineDevices.payload.data.summary.online, 1);
+  assert.equal(onlineDevices.payload.data.items[0].deviceLabel, 'Primary PC');
+  assert.equal(onlineDevices.payload.data.items[0].clientVersion, '1.0.0');
+  assert.equal(typeof onlineDevices.payload.data.items[0].ipAddress, 'string');
+  const crossTenantOnlineDevices = await request(baseUrl, 'GET', `/api/v1/apps/${application.id}/online-devices`, {
+    token: merchantBLogin.payload.data.token,
+  });
+  assert.equal(crossTenantOnlineDevices.status, 403);
 
   const wrongDevice = await request(baseUrl, 'POST', '/api/v1/client/verify', {
     body: {
@@ -490,6 +507,82 @@ test('multi-tenant license activation and verification workflow', async (context
   });
   assert.equal(deviceLimit.status, 409);
   assert.equal(deviceLimit.payload.error.code, 'DEVICE_LIMIT_REACHED');
+
+  const disconnectPrimary = await request(baseUrl, 'POST', `/api/v1/device-bindings/${activation.payload.data.payload.bindingId}/disconnect`, {
+    token: merchantToken,
+    body: {},
+  });
+  assert.equal(disconnectPrimary.status, 200);
+  assert.equal(disconnectPrimary.payload.data.disconnectedSessions, 1);
+  const verificationAfterDisconnect = await request(baseUrl, 'POST', '/api/v1/client/verify', {
+    body: {
+      appId: application.id,
+      sessionToken,
+      deviceId: 'device-primary-001',
+      timestamp: Date.now(),
+      nonce: nonce('verify-after-disconnect'),
+    },
+  });
+  assert.equal(verificationAfterDisconnect.status, 401);
+  assert.equal(verificationAfterDisconnect.payload.error.code, 'SESSION_EXPIRED');
+  const offlineDevices = await request(baseUrl, 'GET', `/api/v1/apps/${application.id}/online-devices?status=offline`, {
+    token: merchantToken,
+  });
+  assert.equal(offlineDevices.status, 200);
+  assert.equal(offlineDevices.payload.data.items.some((item) => item.bindingId === activation.payload.data.payload.bindingId), true);
+  const primaryReactivation = await request(baseUrl, 'POST', '/api/v1/client/activate', {
+    body: {
+      appId: application.id,
+      licenseKey: plaintextLicense,
+      deviceId: 'device-primary-001',
+      deviceLabel: 'Primary PC',
+      clientVersion: '1.0.1',
+      timestamp: Date.now(),
+      nonce: nonce('reactivate-after-disconnect'),
+    },
+  });
+  assert.equal(primaryReactivation.status, 200);
+  assert.equal(primaryReactivation.payload.data.payload.bindingId, activation.payload.data.payload.bindingId);
+
+  const selfUnbindWrongDevice = await request(baseUrl, 'POST', '/api/v1/client/unbind', {
+    body: {
+      appId: application.id,
+      sessionToken: primaryReactivation.payload.data.payload.sessionToken,
+      deviceId: 'device-secondary-002',
+      timestamp: Date.now(),
+      nonce: nonce('self-unbind-wrong-device'),
+    },
+  });
+  assert.equal(selfUnbindWrongDevice.status, 401);
+  assert.equal(selfUnbindWrongDevice.payload.error.code, 'DEVICE_MISMATCH');
+  const selfUnbindNonce = nonce('self-unbind');
+  const selfUnbind = await request(baseUrl, 'POST', '/api/v1/client/unbind', {
+    body: {
+      appId: application.id,
+      sessionToken: primaryReactivation.payload.data.payload.sessionToken,
+      deviceId: 'device-primary-001',
+      clientVersion: '1.0.1',
+      timestamp: Date.now(),
+      nonce: selfUnbindNonce,
+    },
+  });
+  assert.equal(selfUnbind.status, 200);
+  assert.equal(selfUnbind.payload.data.payload.unbound, true);
+  assert.equal(selfUnbind.payload.data.payload.code, 'DEVICE_UNBOUND');
+  assert.equal(selfUnbind.payload.data.payload.bindingId, activation.payload.data.payload.bindingId);
+  assert.equal(selfUnbind.payload.data.payload.requestNonce, selfUnbindNonce);
+  assert.equal(verifySignedEnvelope(selfUnbind.payload.data, application.signing.publicKey), true);
+  const verifyAfterSelfUnbind = await request(baseUrl, 'POST', '/api/v1/client/verify', {
+    body: {
+      appId: application.id,
+      sessionToken: primaryReactivation.payload.data.payload.sessionToken,
+      deviceId: 'device-primary-001',
+      timestamp: Date.now(),
+      nonce: nonce('verify-after-self-unbind'),
+    },
+  });
+  assert.equal(verifyAfterSelfUnbind.status, 401);
+  assert.equal(verifyAfterSelfUnbind.payload.error.code, 'SESSION_EXPIRED');
 
   const unbindPrimary = await request(baseUrl, 'POST', `/api/v1/device-bindings/${activation.payload.data.payload.bindingId}/unbind`, {
     token: merchantToken,
@@ -644,7 +737,17 @@ test('multi-tenant license activation and verification workflow', async (context
     token: merchantToken,
   });
   assert.equal(logs.status, 200);
-  assert.equal(logs.payload.data.total, 5);
+  assert.equal(logs.payload.data.total, 7);
+  const validationLogs = logs.payload.data.items.filter((item) => ['activate', 'verify'].includes(item.event));
+  assert.equal(validationLogs.length, 6);
+  assert.equal(validationLogs.every((item) => item.resultCode === 'LICENSE_VALID'), true);
+  assert.equal(logs.payload.data.items.some((item) => item.event === 'unbind' && item.resultCode === 'DEVICE_UNBOUND'), true);
+  // Rejected requests are not persisted, and a successful unbind is not a verification failure.
+  const verificationDashboard = await request(baseUrl, 'GET', `/api/v1/dashboard?appId=${application.id}`, {
+    token: merchantToken,
+  });
+  assert.equal(verificationDashboard.status, 200);
+  assert.deepEqual(verificationDashboard.payload.data.verification24h, { total: 6, successful: 6, failed: 0 });
 
   const resetMerchantBPassword = await request(
     baseUrl,

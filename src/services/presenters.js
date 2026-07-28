@@ -36,6 +36,12 @@ export function presentApplication(application) {
       keyId: application.signingKeyId,
       publicKey: application.signingPublicKey,
     },
+    // WS4 防重打包绑定约束（仅 owner 可见，用于登记允许的包名/证书/最低版本）。
+    binding: {
+      androidPackage: application.androidPackage ?? null,
+      signingCertificates: application.signingCertificates ?? null,
+      minVersionCode: application.minVersionCode ?? null,
+    },
     createdAt: application.createdAt,
     updatedAt: application.updatedAt,
   };

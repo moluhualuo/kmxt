@@ -1,6 +1,6 @@
 # MySQL 与 Redis 存储
 
-作者：花落；协议：MIT。本文对应 KMXT 0.6.0。
+作者：花落；协议：MIT。本文对应 KMXT 0.7.0。
 
 MySQL 的旧 `StateStore` 兼容层已移除连接级 advisory lock：事务使用 `SERIALIZABLE` 隔离级别及表行/范围锁，并仅 upsert 有变化的行。它仅保留为兼容诊断能力；MySQL 运行时的业务服务均使用按领域 Repository，不会整库加载或全量回写。
 
@@ -8,7 +8,7 @@ MySQL 的旧 `StateStore` 兼容层已移除连接级 advisory lock：事务使�
 
 `MysqlOrderRepository` 直接分页读取指定商户订单，并按订单号和查询摘要查询店铺订单。公开下单在同一事务中锁定启用的商户、商品和程序，再保存加密联系信息和查询摘要；拒单锁定订单行并写入原因。人工审核发卡在一个事务内执行 `SELECT ... FOR UPDATE` 锁定订单行，插入 `license_batches.source_id`（唯一）与卡密后再更新订单；重复审核读取已发卡订单，不会重复生成卡密。
 
-`MysqlVerificationRepository` 将激活和心跳迁为定向事务：它锁定程序、商户、卡密行；每张卡密的激活串行化，因此同设备重复激活可复用绑定，有限设备数可原子判断，`maxDevices=0` 不执行数量限制。解绑、停用和会话撤销仍保持同一事务语义。
+`MysqlVerificationRepository` 将激活、心跳和客户端主动解绑迁为定向事务：它锁定程序、商户、卡密、会话与绑定行；每张卡密的激活串行化，因此同设备重复激活可复用绑定，有限设备数可原子判断，`maxDevices=0` 不执行数量限制。客户端主动解绑只有在会话与设备摘要同时匹配时才将绑定改为 `revoked`、删除该绑定全部会话并写入验证日志。
 
 在兼容层与定向 Repository 并存期间，订单发卡、激活和心跳会对 MySQL deadlock/lock-wait 错误进行最多三次的安全重试；不会重试业务校验错误。
 
@@ -24,7 +24,15 @@ MySQL 的旧 `StateStore` 兼容层已移除连接级 advisory lock：事务使�
 
 `MysqlAuditRepository` 按商户或程序执行审计与验证日志的分页、事件和时间范围查询，先校验资源所属租户，再使用独立索引列过滤，避免读取无关日志 payload。
 
-`MysqlMaintenanceRepository` 在一个事务中删除过期管理会话、客户端会话或超出保留期的验证日志，并写入不含敏感字段的 `maintenance.*` 审计摘要。
+`MysqlMaintenanceRepository` 在一个事务中删除过期管理会话、客户端会话、已到期模型租约或超出保留期的验证日志，并写入不含敏感字段的 `maintenance.*` 审计摘要。
+
+`MysqlOnlineDeviceRepository` 使用 `device_bindings.app_id/status`、`client_sessions.binding_id/expires_at` 和程序 payload 中的心跳设置计算在线状态。分页查询只返回设备标签、卡密遮罩、客户端版本、可信来源 IP 与时间字段；设备摘要和会话摘要不会进入响应。强制下线在锁定绑定后删除对应客户端会话，并在实际删除时写入 `device.disconnect` 审计记录。
+
+`MysqlModelDeliveryRepository` 直接处理模型制品登记、列表、终态吊销和模型租约。
+登记会锁定启用的商户与程序；租约事务按与心跳一致的顺序锁定目标 artifact、客户端会话、卡密和设备绑定，
+不再经过全量 `StateStore`。制品一旦进入 `revoked` 就不能恢复；重复吊销保持幂等。
+`MysqlMaintenanceRepository` 复用模型 Repository 的定向删除，在 `cleanup-sessions`
+事务中一并删除 `expires_at <= now` 的模型租约。
 
 ## 存储契约
 
@@ -55,7 +63,7 @@ node cli/kmxt.js create-admin --username platform-admin --password-file /run/sec
 
 MySQL 密码和 CA 分别由 `KMXT_MYSQL_PASSWORD_FILE`、`KMXT_MYSQL_TLS_CA_FILE` 注入。驱动强制 TLS 1.2 以上并设置 `rejectUnauthorized=true`。密码不得放进 URL、环境示例、Compose 或日志。连接池上限由 `KMXT_MYSQL_POOL_LIMIT` 控制，默认 10。
 
-生产模式必须设置独立 `KMXT_REDIS_URL` 和 `KMXT_REDIS_PASSWORD_FILE`。Nonce 使用 `SET key 1 NX PX ttl`；限流用 Lua 在一个原子操作内执行 `INCR`、首次 `EXPIRE` 和 `TTL`。Redis 不保存卡密、会话明文或设备原文。
+生产模式必须设置独立 `KMXT_REDIS_URL` 和 `KMXT_REDIS_PASSWORD_FILE`。Nonce 使用 `SET key 1 NX PX ttl`，其中 ReplayGuard 传入的 `ttl` 为 `max(2 * clockSkew + 1000ms, timestamp + clockSkew - now + 1000ms)`；内存实现以同一 TTL 计算绝对到期时间。限流用 Lua 在一个原子操作内执行 `INCR`、首次 `EXPIRE` 和 `TTL`。Redis 不保存卡密、会话明文或设备原文。
 
 ## 集成验收
 
@@ -72,6 +80,24 @@ KMXT_RUN_MYSQL_INTEGRATION=1 KMXT_RUN_REDIS_INTEGRATION=1 npm test
 作者：花落；协议：MIT。外部托管 MySQL 默认使用 `KMXT_MYSQL_TLS_MODE=verify_identity`，并要求 `KMXT_MYSQL_TLS_CA_FILE` 指向可信 CA 文件。部署在同一 Docker Compose 私有网络内的本地 MySQL 使用 `KMXT_MYSQL_TLS_MODE=disabled`，此时连接层不读取 CA 文件，也不会开启 TLS；密码仍必须通过 `KMXT_MYSQL_PASSWORD_FILE` 注入，不能写入 URL、Compose 字面值或日志。
 
 ## Current online MySQL topology
+
+## 模型交付表
+
+`migrations/004_model_delivery.sql` 将 schema 提升到 5，并创建：
+
+- `model_artifacts`：程序、名称、版本、格式、状态、密文 SHA-256、大小和 JSON
+  清单。JSON 中的 `encryptedDek` 已用根密钥派生 AES-256-GCM 加密；对象存储只
+  保存密文模型，MySQL 不保存模型字节。
+- `model_leases`：artifact、卡密、设备绑定、客户端公钥指纹、JTI、状态和到期
+  时间。它不保存客户端公钥私钥、明文 DEK、会话 token 或设备 ID。
+
+JSON 开发适配器使用同名 `modelArtifacts/modelLeases` 集合并由 schema 4 自动
+升级到 5；删除 JSON 卡密时会同步移除关联租约。MySQL 由
+`MysqlModelDeliveryRepository` 定向访问两张表，卡密外键删除会级联清理租约；
+上线前必须先运行 migration，否则 schema 5 运行时会失败关闭。受控发布 CLI 在 Node
+之外加密并只登记元数据；管理后台上传路径会让单个明文文件短暂进入 Node 内存，随后把
+加密 `.vmp` 作为响应返回，但两条路径都不会把模型字节写入 JSON/MySQL。生产大文件应
+使用本地发布 CLI，并通过 APK/AAB 或 HTTPS 对象存储/CDN 分发，避免浏览器上传的内存开销。
 
 Author: hualuo. License: MIT. Production MySQL runs inside the KMXT Docker Compose private network. The app container connects to `mysql:3306` with `KMXT_MYSQL_TLS_MODE=disabled` because the link stays inside the Compose bridge network.
 

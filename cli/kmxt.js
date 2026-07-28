@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Author: 花落. MIT License.
 import { createRuntime } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { runMigrations } from '../src/storage/migrate.js';
@@ -30,7 +31,7 @@ function usage() {
 Usage:
   node cli/kmxt.js init
   node cli/kmxt.js migrate
-  node cli/kmxt.js create-admin --username <name> --password <password> [--display-name <name>]
+  node cli/kmxt.js create-admin --username <name> (--password-file <path> | --password <password>) [--display-name <name>]
   node cli/kmxt.js serve [--host 127.0.0.1] [--port 8080]
   node cli/kmxt.js status
   node cli/kmxt.js doctor

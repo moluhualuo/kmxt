@@ -7,6 +7,7 @@ const OWNER_ROLES = [Roles.PLATFORM_ADMIN, Roles.MERCHANT_ADMIN];
 const LOGIN_LIMIT = { limit: 10, windowSeconds: 60 };
 const ADMIN_LIMIT = { limit: 180, windowSeconds: 60 };
 const CLIENT_LIMIT = { limit: 300, windowSeconds: 60 };
+const MODEL_LEASE_LIMIT = { limit: 30, windowSeconds: 60 };
 const STORE_READ_LIMIT = { limit: 120, windowSeconds: 60 };
 const STORE_ORDER_LIMIT = { limit: 10, windowSeconds: 60 };
 const STORE_QUERY_LIMIT = { limit: 30, windowSeconds: 60 };
@@ -15,7 +16,7 @@ export function registerRoutes(router, services) {
   router.add('GET', '/health', { rateLimit: ADMIN_LIMIT }, async () => ({
     status: 'ok',
     service: 'kmxt-license-server',
-    version: '0.6.0',
+    version: '0.7.0',
     time: new Date().toISOString(),
   }));
   router.add('GET', '/ready', { rateLimit: ADMIN_LIMIT }, async () => ({ status: 'ready', checks: await services.readiness.check() }));
@@ -119,6 +120,35 @@ export function registerRoutes(router, services) {
   ));
   router.add('PATCH', '/api/v1/apps/:appId', { auth: true, roles: OWNER_ROLES, rateLimit: ADMIN_LIMIT }, async ({ user, params, body }) => services.applications.update(user, params.appId, requireObject(body)));
 
+  router.add('POST', '/api/v1/apps/:appId/artifacts', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params, body }) => response(201, await services.modelDelivery.register(
+    user,
+    params.appId,
+    requireObject(body),
+  )));
+  router.add('GET', '/api/v1/apps/:appId/artifacts', {
+    auth: true,
+    roles: ADMIN_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params }) => services.modelDelivery.list(user, params.appId));
+  router.add('PATCH', '/api/v1/artifacts/:artifactId/status', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params, body }) => services.modelDelivery.setStatus(
+    user,
+    params.artifactId,
+    requireObject(body).status,
+  ));
+  router.add('DELETE', '/api/v1/artifacts/:artifactId', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params }) => services.modelDelivery.delete(user, params.artifactId));
+
   router.add('GET', '/api/v1/apps/:appId/products', {
     auth: true,
     roles: ADMIN_ROLES,
@@ -212,6 +242,21 @@ export function registerRoutes(router, services) {
     roles: ADMIN_ROLES,
     rateLimit: ADMIN_LIMIT,
   }, async ({ user, params }) => services.licenses.unbindDevice(user, params.bindingId));
+  router.add('GET', '/api/v1/apps/:appId/online-devices', {
+    auth: true,
+    roles: ADMIN_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params, query }) => services.onlineDevices.list(
+    user,
+    params.appId,
+    parsePagination(query),
+    { status: query.get('status'), search: query.get('search') },
+  ));
+  router.add('POST', '/api/v1/device-bindings/:bindingId/disconnect', {
+    auth: true,
+    roles: ADMIN_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params }) => services.onlineDevices.disconnect(user, params.bindingId));
 
   router.add('GET', '/api/v1/merchants/:merchantId/audit-logs', {
     auth: true,
@@ -272,10 +317,32 @@ export function registerRoutes(router, services) {
   router.add('GET', '/api/v1/client/apps/:appId/config', { rateLimit: CLIENT_LIMIT }, async ({ params }) => {
     return services.applications.getPublicConfig(params.appId);
   });
-  router.add('POST', '/api/v1/client/activate', { rateLimit: CLIENT_LIMIT }, async ({ body }) => {
-    return services.verification.activate(requireObject(body));
+  router.add('POST', '/api/v1/client/activate', { rateLimit: CLIENT_LIMIT }, async ({ body, clientIp }) => {
+    return services.verification.activate({ ...requireObject(body), clientIp });
   });
-  router.add('POST', '/api/v1/client/verify', { rateLimit: CLIENT_LIMIT }, async ({ body }) => {
-    return services.verification.verify(requireObject(body));
+  router.add('POST', '/api/v1/client/verify', { rateLimit: CLIENT_LIMIT }, async ({ body, clientIp }) => {
+    return services.verification.verify({ ...requireObject(body), clientIp });
+  });
+  router.add('POST', '/api/v1/client/unbind', { rateLimit: CLIENT_LIMIT }, async ({ body, clientIp }) => {
+    return services.verification.unbind({ ...requireObject(body), clientIp });
+  });
+  router.add('POST', '/api/v1/client/artifacts/:artifactId/lease', {
+    rateLimit: MODEL_LEASE_LIMIT,
+  }, async ({ params, body, clientIp }) => services.modelDelivery.issueLease({
+    ...requireObject(body),
+    artifactId: params.artifactId,
+    clientIp,
+  }));
+
+  // Admin API: 付费模型加密上传（WS7）。加密后 .vmp 密文直接回传下载，服务端只存 DEK+元数据。
+  // 列表/吊销复用现有的 GET /api/v1/apps/:appId/artifacts 与 PATCH /api/v1/artifacts/:id/status。
+  router.add('POST', '/api/v1/admin/artifacts/upload', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+    rawBody: true,
+  }, async ({ user, request }) => {
+    const adminArtifacts = await import('../routes/admin-artifacts.js');
+    return adminArtifacts.handleUpload(user, request, services);
   });
 }

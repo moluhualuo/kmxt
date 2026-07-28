@@ -1,5 +1,7 @@
 # 安全设计
 
+作者：花落；协议：MIT。
+
 > 0.6.0 生产补充：MySQL 强制校验证书的 TLS；密码只从只读 secret 文件读取。生产 Nonce 和登录失败状态使用 Redis，限流用原子 Lua。只有命中 `KMXT_TRUSTED_PROXY_CIDRS` 的直连代理才能提供 `X-Forwarded-For`。Android 会话由 Keystore AES-GCM 加密，并严格在线拒绝网络、TLS、解析、签名和到期失败。
 
 ## 保护目标
@@ -46,18 +48,23 @@
 1. 检查算法和固定 `keyId`。
 2. 验证 Ed25519 签名。
 3. 检查固定 `appId`。
-4. 检查 `licensed === true`。
-5. 检查授权和会话到期时间。
+4. 严格比较签名载荷的 `requestNonce` 与当前请求 `nonce`。
+5. 检查 `licensed === true`。
+6. 检查授权和会话到期时间。
 
 服务端错误响应没有授权效力。任何网络错误、HTTP 错误、无签名响应或验签失败都必须拒绝授权。
 
 ## 防重放与会话撤销
 
-激活和心跳必须包含当前毫秒时间戳及随机 Nonce。JSON 开发模式的进程内 ReplayGuard 会在允许的时钟窗口内保存 Nonce；MySQL 生产模式改由 Redis `SET NX PX` 原子保存并拒绝重复值。客户端会话默认 30 分钟，通过心跳续期但不能超过卡密到期时间。
+激活和心跳必须包含当前毫秒时间戳及随机 Nonce。服务端以接收时间 `now` 为基准，在闭区间 `[now - clockSkew, now + clockSkew]` 内接受请求，因此窗口内的未来时间戳也有效。成功消费的 Nonce 使用 `max(2 * clockSkew + 1000ms, timestamp + clockSkew - now + 1000ms)` 作为 TTL，覆盖完整可接受窗口并额外保留 1 秒，防止闭区间边界或 Redis 到期调度造成重放。JSON 开发模式由进程内 ReplayGuard 保存，MySQL 生产模式改由 Redis `SET NX PX` 原子保存并拒绝重复值。所有成功的激活、心跳和主动解绑签名载荷还会回传 `requestNonce`；客户端验签后必须与当前请求 nonce 严格比较，从响应侧拒绝旧信封重放。客户端会话默认 30 分钟，通过心跳续期但不能超过卡密到期时间。
 
 禁用商户、程序或卡密以及解绑设备，都会移除对应客户端会话。禁用商户还会撤销其管理会话。
 
-JSON 开发模式的 Nonce 与速率限制状态位于进程内存；MySQL 生产模式强制使用 Redis，通过 `SET NX PX` 保存 Nonce，并用原子计数保存 IP 和账号维度限制。即使 Redis 和 MySQL 均具备共享状态，本版本仍明确部署为单个 Node 写入实例；这是一项产品部署边界，不是因为生产 Nonce 位于进程内存。
+客户端主动解绑需要当前有效会话、同一设备 ID、时间戳与一次性 Nonce。服务端对会话摘要和设备摘要分别校验，成功后原子撤销绑定及其全部会话，并返回绑定原请求 nonce 的程序私钥签名 `DEVICE_UNBOUND` 确认。客户端必须验签并确认 `requestNonce` 后才能删除本地安全存储中的会话，不能把单纯清理本地令牌视为释放服务端设备名额。
+
+在线设备管理使用程序心跳间隔两倍（最低 60 秒）作为展示窗口，同时要求客户端会话尚未到期。管理端“强制下线”只删除会话并写入受租户隔离的审计记录，不暴露设备 ID 或设备摘要。激活和心跳保存的来源 IP 由服务端解析；只有直连地址属于 `KMXT_TRUSTED_PROXY_CIDRS` 时才接受代理链，客户端请求体无法覆盖该值。IP 仅向有权访问该程序的管理角色展示，应按部署地区的隐私与日志保留政策控制访问和备份周期。
+
+JSON 开发模式的 Nonce 与速率限制状态位于进程内存；MySQL 生产模式强制使用 Redis，通过 `SET NX PX` 按 ReplayGuard 计算的完整窗口 TTL 保存 Nonce，并用原子计数保存 IP 和账号维度限制。两种状态实现遵守相同的毫秒 TTL 契约。即使 Redis 和 MySQL 均具备共享状态，本版本仍明确部署为单个 Node 写入实例；这是一项产品部署边界，不是因为生产 Nonce 位于进程内存。
 
 服务端为每个请求生成 `X-Request-Id`，并输出单行 JSON 访问日志。访问日志只包含方法、无查询串路径、状态码、耗时和管理角色标识；禁止写入请求体、Authorization、密码、卡密、订单查询码、Redis/MySQL 密码及完整设备摘要。
 
@@ -75,9 +82,40 @@ JSON 开发模式的 Nonce 与速率限制状态位于进程内存；MySQL 生�
 - 请求体默认限制为 1 MiB。
 - 管理接口要求 Bearer 会话。
 - 登录、管理和客户端接口使用不同限流阈值。
+- Node SDK 拒绝非回环 HTTP `baseUrl`，并使用 `redirect: error` 防止把授权请求转发到非预期主机；回环 HTTP 仅用于本地开发。
 - 响应设置 `nosniff`、禁止 framing、无缓存和不发送引用来源等安全头。
 - CORS 默认关闭；只有设置 `KMXT_CORS_ORIGIN` 后才允许指定来源。
 - 服务不会信任 `X-Forwarded-For`，反向代理场景的内置限流按代理地址聚合。公网部署建议由反向代理追加独立限流。
+
+## 模型密钥租约
+
+- 每个 artifact 使用独立随机 32 字节 DEK 和 AES-256-GCM，不复用 APK 内静态主密钥。
+- Artifact 清单只接受规范 Base64URL 的 12 字节 nonce 和 16 字节认证 tag；
+  可选分块大小必须是 64 KiB 到 64 MiB 的安全整数，防止异常元数据进入签名租约。
+- KMXT 仅保存根密钥派生 AES-GCM 加密后的 DEK；响应、列表、审计与访问日志都不记录明文。
+- 租约请求先通过现有客户端会话、设备摘要、卡密状态、Nonce 和时间窗口验证；
+  `expired` 状态和已到期卡密均失败关闭，拒绝路径不创建租约。
+- DEK 使用一次性服务端 X25519 密钥与客户端临时 X25519 公钥协商，再经
+  HKDF-SHA256 派生 AES-GCM 包裹密钥。签名载荷绑定 artifact ID、版本、密文
+  SHA-256、binding ID、lease ID、请求 Nonce 和客户端公钥指纹。
+- 租约默认 10 分钟，并取租约配置、会话到期和卡密到期的最早值。Artifact
+  吊销后不再签发新租约，现有记录改为 revoked；吊销是服务端不可恢复终态。
+- `cleanup-sessions` 删除已到期模型租约，未到期 revoked 记录保留到签名
+  `expiresAt`。吊销不能擦除已经交付到客户端进程内的 DEK，客户端仍必须按短租约到期时间失败关闭。
+- Android 客户端必须先验 Ed25519，再验请求 Nonce、公钥指纹、哈希与到期时间；
+  app-specific SDK 在 native 生成 X25519 私钥并以一次性 handle 持有 DEK，Java/Kotlin
+  不接收 DEK。通用客户端可缓存密文，但 ScreenYolo 策略禁止密文和明文落盘。
+- 租约请求发生网络、解析、验签、解包失败或协程取消时，Kotlin 必须调用 native cancel
+  擦除待处理 X25519 私钥。只有 `ModelLease` 成功交付调用方后才保留一次性 handle。
+- Native handle 的有效期不得超过已签名 `expiresAt`，并使用固定容量上限防止内存状态
+  无界增长。过期 handle 立即拒绝使用，DEK 和物理表项在后续 handle 操作时惰性擦除；
+  清理后仍满则失败关闭。已识别的会话撤销、会话失效或设备不匹配会清空全部 handle。
+
+该机制阻止 APK 静态提取直接得到模型密钥，并限制跨设备复制和响应重放；它不能
+在攻击者完全控制 root/Hook/进程内存时保证明文永不可见。高价值部署仍应叠加
+Android Keystore 硬件持有证明、Play Integrity/Key Attestation、短租约、异常审计
+及客户端完整性策略。KMS/HSM、商业壳和商业函数虚拟化属于外部基础设施，不应以
+源码中的解释器骨架冒充已启用。
 
 ## 上线检查
 

@@ -15,6 +15,8 @@ import { ProductService } from './services/product-service.js';
 import { VerificationService } from './services/verification-service.js';
 import { DashboardService } from './services/dashboard-service.js';
 import { MaintenanceService } from './services/maintenance-service.js';
+import { OnlineDeviceService } from './services/online-device-service.js';
+import { ModelDeliveryService } from './services/model-delivery-service.js';
 import { createStore } from './storage/create-store.js';
 
 // Author: 花落. This project is provided under the MIT License.
@@ -39,9 +41,12 @@ export async function createRuntime(configOverrides = {}) {
     audit: new AuditService(store),
     verification: new VerificationService(store, rootSecret, config, securityState),
     dashboard: new DashboardService(store),
+    onlineDevices: new OnlineDeviceService(store, config),
     maintenance: new MaintenanceService(store),
+    modelDelivery: null,
     readiness: { async check() { const [storage, security] = await Promise.all([store.ping(), securityState.ping()]); return { storage, security, rootKey: rootSecret.length > 0 }; } },
   };
+  services.modelDelivery = new ModelDeliveryService(store, rootSecret, config, services.verification);
   const router = new Router({ authService: services.auth, config, securityState });
   registerRoutes(router, services);
   const staticServer = new StaticServer(config.publicDirectory);

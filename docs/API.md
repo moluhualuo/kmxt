@@ -1,7 +1,7 @@
 # API 文档
 
 版本：`v1`  
-服务版本：`0.6.0`  
+服务版本：`0.7.0`
 作者：花落  
 协议：MIT
 
@@ -73,13 +73,14 @@ Authorization: Bearer <admin-token>
 }
 ```
 
-`baseUrl` 来自 `KMXT_PUBLIC_BASE_URL`，公钥为程序独立 Ed25519 SPKI PEM。接口不返回私钥。公开的 `GET /api/v1/client/apps/:appId/config`、`POST /api/v1/client/activate` 与 `POST /api/v1/client/verify` 字段保持兼容。
+`baseUrl` 来自 `KMXT_PUBLIC_BASE_URL`，公钥为程序独立 Ed25519 SPKI PEM。接口不返回私钥。公开的 `GET /api/v1/client/apps/:appId/config`、`POST /api/v1/client/activate`、`POST /api/v1/client/verify` 与 `POST /api/v1/client/unbind` 共用程序签名信任根。
 
 ## 健康检查
 
 ### `GET /ready`
 
-无需认证。执行存储、Redis/安全状态与根密钥就绪检查；详细响应和 0.6.0 管理接口见 `docs/PRODUCTIZATION_060.md`。
+无需认证。执行存储、Redis/安全状态与根密钥就绪检查；历史 0.6.0 变更记录见
+`docs/PRODUCTIZATION_060.md`，当前接口以本文和 `src/http/routes.js` 为准。
 
 ### `GET /health`
 
@@ -91,12 +92,23 @@ Authorization: Bearer <admin-token>
   "data": {
     "status": "ok",
     "service": "kmxt-license-server",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "time": "2026-07-13T08:00:00.000Z"
   },
   "requestId": "..."
 }
 ```
+
+## 管理总览
+
+### `GET /api/v1/dashboard`
+
+需要任意管理角色，并按登录用户、可选 `merchantId` 和可选 `appId` 执行租户隔离。
+返回商户、程序、待审核订单、卡密、有效绑定以及 `verification24h` 统计。
+24 小时验证只统计已经写入验证日志的 `activate` 与 `verify` 事件；
+`resultCode=LICENSE_VALID` 计为成功，其他已记录结果计为失败。
+成功的主动解绑 `DEVICE_UNBOUND` 不属于验证统计，服务端在校验失败前拒绝且没有写入
+验证日志的请求也不会进入 `total` 或 `failed`。
 
 ## 管理认证
 
@@ -418,6 +430,65 @@ Authorization: Bearer <admin-token>
 
 将绑定改为 `revoked` 并撤销相关客户端会话。该接口没有请求体。
 
+### `GET /api/v1/apps/:appId/online-devices`
+
+任意管理角色可调用，但必须通过程序所属商户的租户隔离校验。接口按程序分页返回活动设备绑定的在线状态，不返回设备 ID 原文或设备摘要。
+
+查询参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `page` | `1` | 页码。 |
+| `limit` | `20` | 每页数量，最大 `100`。 |
+| `status` | `online` | `online`、`offline` 或 `all`。 |
+| `search` | 空 | 模糊匹配设备标签、卡密遮罩预览、客户端版本或来源 IP，最长 100 字符。 |
+
+在线判定要求同时满足：设备绑定为 `active`、至少存在一个未到期客户端会话、该会话最后心跳不早于在线窗口。在线窗口为程序 `heartbeatSeconds × 2`，最低 60 秒。这个窗口只用于管理端在线展示，不修改客户端签名响应中的心跳和离线宽限策略。
+
+```json
+{
+  "items": [
+    {
+      "bindingId": "binding-uuid",
+      "licenseId": "license-uuid",
+      "licenseKeyPreview": "KMXT-APP-****-1234",
+      "deviceLabel": "Primary PC",
+      "clientVersion": "1.0.1",
+      "ipAddress": "203.0.113.10",
+      "online": true,
+      "status": "online",
+      "boundAt": "2026-07-18T08:00:00.000Z",
+      "lastSeenAt": "2026-07-18T08:10:00.000Z",
+      "sessionExpiresAt": "2026-07-18T08:40:00.000Z"
+    }
+  ],
+  "page": 1,
+  "limit": 20,
+  "total": 1,
+  "summary": {
+    "total": 3,
+    "online": 1,
+    "offline": 2,
+    "onlineWindowSeconds": 180
+  }
+}
+```
+
+`summary` 始终统计当前程序的全部活动绑定，不受 `status`、`search` 和分页影响。`ipAddress` 来自服务端可信客户端地址解析：只有直连地址命中 `KMXT_TRUSTED_PROXY_CIDRS` 时才采纳代理转发链；客户端请求体不能自行指定该字段。
+
+### `POST /api/v1/device-bindings/:bindingId/disconnect`
+
+任意管理角色可调用并执行租户隔离。接口没有业务请求体，会删除该设备绑定的全部客户端会话，使已有会话令牌立即返回 `401 SESSION_EXPIRED`；绑定仍保持 `active`，因此设备之后可以重新激活且不会额外占用设备名额。
+
+```json
+{
+  "bindingId": "binding-uuid",
+  "disconnectedSessions": 1
+}
+```
+
+接口幂等：设备已经离线时返回 `disconnectedSessions: 0`。只有实际撤销会话时才写入 `device.disconnect` 审计记录。
+
 ## 商品管理
 
 商品属于一个商户程序，决定公开店铺展示内容和审核发卡时生成的授权参数。展示价格使用人民币整数分，当前版本不执行支付。
@@ -567,11 +638,13 @@ Authorization: Bearer <admin-token>
 
 ### `GET /api/v1/apps/:appId/verification-logs`
 
-任意管理角色并执行商户隔离。分页返回成功的 `activate` 和 `verify` 事件。日志只包含资源 ID、结果、客户端版本和时间。
+任意管理角色并执行商户隔离。分页返回成功的 `activate`、`verify` 和客户端主动 `unbind` 事件。日志只包含资源 ID、结果、客户端版本和时间。
 
 ## 客户端验证接口
 
-客户端接口不使用管理 Bearer 令牌。`timestamp` 必须是当前 Unix 毫秒时间戳，允许偏差由 `KMXT_CLOCK_SKEW_SECONDS` 控制；`nonce` 为 12 到 128 位 URL 安全文本，在时间窗口内不可重复。
+客户端接口不使用管理 Bearer 令牌。`timestamp` 必须是当前 Unix 毫秒时间戳，允许偏差由 `KMXT_CLOCK_SKEW_SECONDS` 控制；服务端闭区间接受 `now - clockSkew` 到 `now + clockSkew`，包含窗口内的未来时间戳。`nonce` 为 12 到 128 位 URL 安全文本，在时间窗口内不可重复；成功消费后至少保留 `2 * clockSkew + 1000ms`，确保未来时间戳的整个可接受窗口均受防重放保护。
+
+`activate`、`verify` 和 `unbind` 的成功签名载荷都包含 `requestNonce`，其值必须与本次请求的 `nonce` 完全一致。客户端必须先验证 Ed25519 签名，再比较该字段；缺失、不匹配或把旧签名响应重放给新请求时都必须失败关闭。
 
 ### `GET /api/v1/client/apps/:appId/config`
 
@@ -603,6 +676,7 @@ Authorization: Bearer <admin-token>
     "licensed": true,
     "code": "LICENSE_VALID",
     "appId": "app-uuid",
+    "requestNonce": "url-safe-random-value",
     "licenseId": "license-uuid",
     "bindingId": "binding-uuid",
     "sessionToken": "opaque-client-token",
@@ -616,7 +690,7 @@ Authorization: Bearer <admin-token>
 }
 ```
 
-客户端必须先使用固定公钥验证签名，再读取 `payload`。不能只判断 HTTP 200 或 `licensed` 字段。
+客户端必须先使用固定公钥验证签名，再确认 `payload.requestNonce` 等于本次请求的 `nonce`，最后读取授权字段。不能只判断 HTTP 200 或 `licensed` 字段。
 
 ### `POST /api/v1/client/verify`
 
@@ -633,9 +707,277 @@ Authorization: Bearer <admin-token>
 }
 ```
 
-成功返回相同签名信封，但不重复返回 `sessionToken`。心跳会将短期会话续至“当前时间 + 会话时长”，且绝不会超过卡密到期时间。
+成功返回相同签名信封并包含本次心跳的 `requestNonce`，但不重复返回 `sessionToken`。心跳会将短期会话续至“当前时间 + 会话时长”，且绝不会超过卡密到期时间。
+
+### `POST /api/v1/client/unbind`
+
+当前设备主动解除自己的绑定。请求不使用管理令牌，但必须携带仍有效的客户端会话、与激活时相同的设备标识、新时间戳和新 Nonce：
+
+```json
+{
+  "appId": "app-uuid",
+  "sessionToken": "opaque-client-token",
+  "deviceId": "stable-device-identifier",
+  "clientVersion": "1.0.0",
+  "timestamp": 1783930200000,
+  "nonce": "fresh-url-safe-random-value"
+}
+```
+
+服务端只允许会话所属设备解绑自身。设备不匹配返回 `401 DEVICE_MISMATCH`，会话无效、过期或已被管理员撤销返回 `401 SESSION_EXPIRED`。成功后绑定状态改为 `revoked`，该绑定全部会话立即失效，并释放卡密设备名额。
+
+成功响应同样是程序 Ed25519 签名信封，但它不是授权信封，客户端必须验证签名后检查 `unbound` 和 `code`：
+
+```json
+{
+  "algorithm": "Ed25519",
+  "keyId": "8f1c4a31e415fe25",
+  "payload": {
+    "unbound": true,
+    "code": "DEVICE_UNBOUND",
+    "appId": "app-uuid",
+    "requestNonce": "fresh-url-safe-random-value",
+    "licenseId": "license-uuid",
+    "bindingId": "binding-uuid",
+    "sessionsRevoked": 1,
+    "issuedAt": "2026-07-19T08:00:00.000Z"
+  },
+  "signature": "base64url-ed25519-signature"
+}
+```
+
+客户端只有在算法、固定 `keyId`、Ed25519 签名、固定 `appId`、当前请求 `nonce` 与已签名 `requestNonce` 完全一致、`unbound === true` 与 `code === DEVICE_UNBOUND` 全部验证通过后，才能删除本地会话。解绑成功后需要再次输入卡密激活才能恢复授权。
 
 ## 常见错误代码
+
+## 加密模型与云密钥
+
+模型发布支持两条路径。推荐由受控发布机运行 `cli/publish-model-artifact.js`，
+在本地生成随机 32 字节 DEK、执行 AES-256-GCM 加密，再仅向 KMXT 登记元数据和
+DEK；该路径不把模型字节发送给 Node。管理后台也提供受认证的上传接口，明文文件
+经 HTTPS 进入 Node 内存，加密后立即以 `.vmp` 下载响应返回，服务端不落盘也不托管
+明文或密文。两条路径最终都只持久化不可变清单、密文 SHA-256、被根密钥加密的
+DEK 和短期租约；大型模型优先使用本地发布 CLI，避免浏览器上传的内存与 Base64 开销。
+
+### 管理后台上下文
+
+“模型制品”页面位于后台程序上下文。从侧栏入口进入时继续使用当前程序的 `appId`；
+点击程序列表每行的“模型”快捷按钮时，先将该程序设为当前上下文再进入页面。
+页内程序选择器也可切换到同一权限范围的其他程序。它不是跨租户的全局制品入口；商户身份来自 Bearer
+会话，请求体中不接受 `merchantId` 来改变权限范围。
+
+| 页面动作 | API | 权限 | 对客户端租约的影响 |
+| --- | --- | --- | --- |
+| 加载当前程序制品 | `GET /api/v1/apps/:appId/artifacts` | `platform_admin`、所属商户的 `merchant_admin` 或 `operator` | 只读，不签发租约。 |
+| 上传并加密模型 | `POST /api/v1/admin/artifacts/upload` | `platform_admin` 或所属商户的 `merchant_admin` | 明文经 HTTPS 进入服务端内存，加密并登记为 `draft`，随后返回 `.vmp` 下载数据。 |
+| 登记加密制品 | `POST /api/v1/apps/:appId/artifacts` | `platform_admin` 或所属商户的 `merchant_admin` | 新制品始终以 `draft` 创建，不签发租约。 |
+| 切换制品状态 | `PATCH /api/v1/artifacts/:artifactId/status` | `platform_admin` 或所属商户的 `merchant_admin` | 只有 `active` 可签发；`revoked` 停止新租约并撤销现有 active 租约。 |
+
+`operator` 可查看当前程序的制品列表，但后端和页面都不允许其上传、登记或切换状态。
+管理页不调用客户端租约 API，也不显示或持久化模型 DEK。
+
+### `POST /api/v1/admin/artifacts/upload`
+
+需要 `platform_admin` 或程序所属商户的 `merchant_admin`。请求使用
+`multipart/form-data`，每个 HTTP 请求只处理一个文件；管理页面允许多选，但会按文件
+逐个调用接口。目标程序必须处于 `active`，新记录固定创建为 `draft`。
+
+| 表单字段 | 必填 | 约束与用途 |
+| --- | --- | --- |
+| `file` | 是 | 明文模型文件；后台支持 `.onnx`、`.param`、`.bin`、`.tflite` 和 `.dlc`。 |
+| `appId` | 是 | 当前程序 UUID；商户范围仍由 Bearer 会话校验。 |
+| `name` | 否 | 制品名；省略时从文件名去除扩展名推断。 |
+| `version` | 否 | 版本号，默认 `1.0`。 |
+| `format` | 否 | 制品格式；省略时从文件扩展名推断，最终仍受 artifact 格式白名单校验。 |
+| `edition` | 否 | 可选版本分层。 |
+| `keyVersion` | 否 | 密钥版本，默认 `1`。 |
+
+服务端为该文件生成独立 DEK 和 12 字节 Nonce，使用 AES-256-GCM 生成
+`[12B nonce][16B tag][ciphertext]` 格式的 `.vmp`，调用模型交付服务登记元数据，
+并把 DEK 以 `artifact-dek:<artifactId>` 用途标签加密保存。响应不包含明文 DEK：
+
+```json
+{
+  "artifactId": "artifact-uuid",
+  "name": "screenyolo-paid",
+  "version": "1.0",
+  "format": "onnx",
+  "cipherSha256": "64-lowercase-hex",
+  "size": 7340060,
+  "encryption": {
+    "algorithm": "AES-256-GCM",
+    "nonce": "base64url",
+    "tag": "base64url",
+    "chunkSize": null
+  },
+  "vmpFilename": "screenyolo-paid.vmp",
+  "vmpBase64": "base64-encrypted-file"
+}
+```
+
+Router 会再包裹统一的 `{ "success": true, "data": ... }` 信封。明文、密文和 DEK
+都不写入服务端磁盘；但当前实现会在内存中缓冲单个 multipart 文件，并把密文转换为
+Base64 JSON 响应，因此反向代理必须设置明确的上传上限和超时，大文件应使用本地发布 CLI。
+`KMXT_MODEL_ARTIFACT_MAX_BYTES` 在登记阶段限制最终密文字节数。
+
+### `POST /api/v1/apps/:appId/artifacts`
+
+需要 `platform_admin` 或程序所属商户的 `merchant_admin`，并要求目标程序处于
+`active`。登记一个 draft artifact；已禁用程序返回 `403 APPLICATION_DISABLED`。
+请求只能通过 HTTPS 管理链路提交；`contentKey` 是 32 字节
+Base64URL DEK，服务收到后立即用 `artifact-dek:<artifactId>` 用途标签加密，
+列表、日志和响应均不返回该字段。
+
+```json
+{
+  "name": "screenyolo-paid.onnx",
+  "version": "2026.07.22",
+  "format": "onnx",
+  "edition": "paid",
+  "cipherSha256": "64-lowercase-hex",
+  "size": 7340032,
+  "encryption": {
+    "algorithm": "AES-256-GCM",
+    "nonce": "base64url",
+    "tag": "base64url"
+  },
+  "contentKey": "base64url-32-bytes",
+  "keyVersion": 1
+}
+```
+
+| 请求字段 | 必填 | 约束与用途 |
+| --- | --- | --- |
+| `name` | 是 | 制品名称，1–128 个字符。 |
+| `version` | 是 | 程序内的发布版本，1–64 个字符；与 `name` 组合唯一。 |
+| `format` | 是 | `onnx`、`ncnn-param`、`ncnn-bin`、`tflite`、`dlc` 或 `bundle`。 |
+| `edition` | 否 | 可选版本分支，1–32 个字符。 |
+| `cipherSha256` | 是 | 密文文件的 64 位小写十六进制 SHA-256。 |
+| `size` | 是 | 密文字节数，不超过 `KMXT_MODEL_ARTIFACT_MAX_BYTES`。 |
+| `encryption` | 是 | 加密元数据对象。 |
+| `encryption.algorithm` | 否 | 只允许 `AES-256-GCM`；省略时也默认为该算法，管理页会显式提交。 |
+| `encryption.nonce` | 是 | 不带填充的规范 Base64URL，解码后恰为 12 字节。 |
+| `encryption.tag` | 是 | 不带填充的规范 Base64URL，解码后恰为 16 字节。 |
+| `encryption.chunkSize` | 否 | 整文件模式省略或为 `null`；分块模式为 65536–67108864 的安全整数。 |
+| `contentKey` | 是 | 仅登记请求使用的 32 字节 Base64URL DEK；页面提交后不回显。 |
+| `keyVersion` | 否 | 1–1000000 的正整数，默认为 `1`。 |
+
+`format` 支持 `onnx`、`ncnn-param`、`ncnn-bin`、`tflite`、`dlc`
+和 `bundle`；`size` 受
+`KMXT_MODEL_ARTIFACT_MAX_BYTES` 限制。同一程序、名称和版本不可重复。
+`encryption.nonce` 和 `encryption.tag` 必填，必须是不带填充的规范
+Base64URL，解码后分别为 12 字节和 16 字节。`chunkSize` 在整文件
+AES-GCM 模式下省略或设为 `null`；分块模式只能使用 65536 到
+67108864 字节范围内的安全整数，字符串、浮点数和范围外数值均返回
+`400 INVALID_INPUT`。
+
+登记成功后返回安全的制品元数据并固定为 `draft`。登记页的 nonce、tag
+和 `contentKey` 都是当次 POST 表单的请求态输入，不写入 URL、`sessionStorage`、
+`localStorage` 或页面导出文件。服务 API 的安全响应可包含非秘密的 nonce/tag
+加密元数据，但绝不包含 `contentKey` 或内部 `encryptedDek`。
+
+### `GET /api/v1/apps/:appId/artifacts`
+
+需要任意有权访问该程序的管理角色，包括只读的 `operator`。返回 artifact
+数组，按 `createdAt` 从新到旧排序。管理页列表展示名称与完整 UUID、版本、edition、格式/加密算法、
+大小、密文摘要、`draft|active|revoked` 状态和更新时间，并提供三态筛选与数量统计；不返回也不展示
+`encryptedDek`、`contentKey` 或任何会话秘密。
+
+### `PATCH /api/v1/artifacts/:artifactId/status`
+
+需要拥有者角色，即 `platform_admin` 或制品所属商户的 `merchant_admin`。
+`operator` 不能调用。请求为 `{"status":"draft|active|revoked"}`：`draft` 用于上传/
+校验阶段，`active` 允许有效客户端签发租约，`revoked` 会同时把现存 active 租约标记为 revoked，
+后续客户端必须停止使用并清除内存密钥。
+
+管理页和后端都只提供 `draft <-> active` 与 `draft|active -> revoked` 流转；
+`revoked` 是不可恢复终态，再请求 `draft` 或 `active` 返回 `409 ARTIFACT_REVOKED`。
+重复提交 `revoked` 是幂等操作。从 `active` 退回 `draft` 会停止新租约，但不会撤销
+已签发租约；这些租约仍有效至各自 `expiresAt`。已吊销制品需要替代时，
+管理员应登记新制品。PATCH 请求体仍只接受上述三个枚举字符串。
+
+### `DELETE /api/v1/artifacts/:artifactId`
+
+需要拥有者角色，即 `platform_admin` 或制品所属商户的 `merchant_admin`，
+`operator` 不能调用。只有处于 `draft` 或 `revoked` 状态的制品可删除；
+删除处于 `active` 的制品返回 `409 ARTIFACT_ACTIVE`，应先切换状态。
+制品不存在返回 `404 ARTIFACT_NOT_FOUND`。该接口没有请求体。
+
+删除在单个事务内完成：先级联删除该制品关联的全部模型租约（数据库外键
+`fk_model_leases_artifact` 也声明了 `ON DELETE CASCADE`），再删除制品本身，
+并写入不含密钥的 `model-artifact.delete` 审计记录。响应返回被一并删除的
+租约数量：
+
+```json
+{ "deletedLeases": 0 }
+```
+
+### `POST /api/v1/client/artifacts/:artifactId/lease`
+
+每来源地址每分钟最多 30 次。请求必须携带现有有效客户端会话、同一设备指纹、
+毫秒时间戳、一次性 Nonce 和客户端临时 X25519 SPKI DER 公钥：
+
+```json
+{
+  "appId": "app-uuid",
+  "sessionToken": "opaque-token",
+  "deviceId": "stable-device-fingerprint",
+  "clientVersion": "1.1.0",
+  "timestamp": 1784678400000,
+  "nonce": "random-base64url",
+  "clientPublicKey": "base64url-x25519-spki"
+}
+```
+
+服务先执行与心跳相同的卡密、会话和设备绑定事务，再返回程序 Ed25519 签名信封。
+卡密状态为 `expired` 或到期时间不晚于当前时间时返回
+`403 LICENSE_EXPIRED`，不会创建模型租约。
+客户端必须先验证算法、固定 `keyId`、签名、`appId`、`artifactId`、
+`requestNonce`、`clientKeyFingerprint`、密文 SHA-256 和租约时间，再用
+X25519 + HKDF-SHA256 + AES-256-GCM 解开 `wrappedDek`。ScreenYolo app-specific
+Android SDK 在 native 完成这些步骤并返回一次性 DEK handle，Java/Kotlin 不接收 DEK：
+
+```json
+{
+  "algorithm": "Ed25519",
+  "keyId": "trusted-key-id",
+  "payload": {
+    "type": "model_lease",
+    "appId": "app-uuid",
+    "artifactId": "artifact-uuid",
+    "cipherSha256": "64-lowercase-hex",
+    "leaseId": "lease-uuid",
+    "bindingId": "binding-uuid",
+    "requestNonce": "original-request-nonce",
+    "issuedAt": "2026-07-22T00:00:00.000Z",
+    "expiresAt": "2026-07-22T00:10:00.000Z",
+    "wrapAlgorithm": "X25519-HKDF-SHA256-AES-256-GCM",
+    "serverEphemeralPublicKey": "base64url",
+    "wrappedDek": {
+      "iv": "base64url",
+      "tag": "base64url",
+      "ciphertext": "base64url",
+      "associatedData": "signed-binding-data"
+    }
+  },
+  "signature": "base64url-ed25519-signature"
+}
+```
+
+密文可缓存，明文模型和 DEK 不得写盘。默认租约 600 秒，并且不能超过客户端
+会话或卡密到期时间。`expiresAt`、`size` 与密文哈希都位于 Ed25519 签名载荷内；
+Android native handle 以该 `expiresAt` 为硬期限，并受固定容量上限保护。到期 handle
+立即不可使用，其 DEK 与物理表项在下一次 handle 操作时惰性擦除；清理后仍满则失败关闭。
+租约 HTTP、解析、验证、解包失败或协程取消时，Android SDK 调用 native cancel 擦除
+待处理 X25519 私钥；成功返回 `ModelLease` 时不执行 cancel。会话撤销、失效或设备不匹配
+一经客户端在线验证确认，会清除 native 授权状态和全部未消费 handle。
+服务端已到期租约记录由 `node cli/kmxt.js cleanup-sessions` 一并清理；未到期的
+`revoked` 记录保留到自身 `expiresAt`，用于审计状态变化。
+
+管理后台与客户端的责任边界是：后台只决定制品清单和状态，客户端只能在
+`active` 状态下凭有效卡密会话、同一设备绑定和临时 X25519 公钥请求租约。
+管理列表不会返回 `wrappedDek`；该字段只出现在通过会话、设备、Nonce 和签名
+约束的客户端租约响应中。作者：花落；协议：MIT。
 
 | HTTP | 代码 | 含义 |
 | --- | --- | --- |
@@ -663,6 +1005,11 @@ Authorization: Bearer <admin-token>
 | 409 | `PASSWORD_CHANGED_RETRY` | 密码被并发请求修改，需重新登录后再试。 |
 | 409 | `USE_SELF_PASSWORD_CHANGE` | 当前账号应使用自助改密接口。 |
 | 409 | `*_EXISTS` | 唯一代码或用户名冲突。 |
+| 409 | `ARTIFACT_REVOKED` | 已吊销制品是终态，不能恢复为草稿或启用。 |
+| 403 | `ARTIFACT_UNAVAILABLE` | Artifact 未激活或已吊销。 |
+| 404 | `ARTIFACT_NOT_FOUND` | Artifact 不存在或不属于该程序。 |
+| 400 | `INVALID_CLIENT_KEY` | 客户端临时 X25519 公钥无效。 |
+| 503 | `ARTIFACT_KEY_UNAVAILABLE` | Artifact DEK 无法解密或包裹。 |
 | 401 | `ORDER_QUERY_INVALID` | 订单号或查询码错误。 |
 | 413 | `BODY_TOO_LARGE` | 请求体超过配置上限。 |
 | 429 | `RATE_LIMITED` | 请求过多，参考 `Retry-After` 响应头。 |

@@ -79,7 +79,8 @@ export class MysqlVerificationRepository {
         binding = {
           id: randomUUID(), merchantId: license.merchantId, appId: input.appId, licenseId: license.id,
           deviceDigest: input.deviceDigest, deviceLabel: input.deviceLabel, status: 'active', boundAt: input.now,
-          lastVerifiedAt: input.now, revokedAt: null, updatedAt: input.now,
+          lastVerifiedAt: input.now, lastClientVersion: input.clientVersion, lastIpAddress: input.clientIp,
+          revokedAt: null, updatedAt: input.now,
         };
         await connection.execute(
           'INSERT INTO device_bindings (id, merchant_id, app_id, license_id, device_digest, status, created_at, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -88,6 +89,8 @@ export class MysqlVerificationRepository {
       } else {
         binding.lastVerifiedAt = input.now;
         binding.deviceLabel = input.deviceLabel || binding.deviceLabel;
+        binding.lastClientVersion = input.clientVersion || binding.lastClientVersion;
+        binding.lastIpAddress = input.clientIp || binding.lastIpAddress;
         binding.updatedAt = input.now;
         await this.#saveBinding(connection, binding);
       }
@@ -95,6 +98,7 @@ export class MysqlVerificationRepository {
       const session = {
         id: randomUUID(), merchantId: license.merchantId, appId: input.appId, licenseId: license.id, bindingId: binding.id,
         tokenDigest: input.sessionDigest, createdAt: input.now, expiresAt: sessionExpiresAt, lastVerifiedAt: input.now,
+        clientVersion: input.clientVersion, ipAddress: input.clientIp,
       };
       await connection.execute(
         'INSERT INTO client_sessions (id, merchant_id, app_id, license_id, binding_id, token_digest, expires_at, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -137,14 +141,80 @@ export class MysqlVerificationRepository {
         throw new AppError('DEVICE_MISMATCH', 'The verification device does not match the binding', 401);
       }
       binding.lastVerifiedAt = input.now;
+      binding.lastClientVersion = input.clientVersion || binding.lastClientVersion;
+      binding.lastIpAddress = input.clientIp || binding.lastIpAddress;
       binding.updatedAt = input.now;
       await this.#saveBinding(connection, binding);
       session.lastVerifiedAt = input.now;
+      session.clientVersion = input.clientVersion || session.clientVersion;
+      session.ipAddress = input.clientIp || session.ipAddress;
       session.expiresAt = new Date(Math.min(input.nowMilliseconds + input.clientSessionTtlSeconds * 1000, Date.parse(license.expiresAt))).toISOString();
       await connection.execute('UPDATE client_sessions SET expires_at = ?, payload = ? WHERE id = ?', [sqlDate(session.expiresAt), JSON.stringify(session), session.id]);
       await this.#appendLog(connection, { merchantId: license.merchantId, appId: input.appId, licenseId: license.id, bindingId: binding.id, event: 'verify', resultCode: 'LICENSE_VALID', clientVersion: input.clientVersion, createdAt: input.now });
       await connection.commit();
       return { application, licenseId: license.id, bindingId: binding.id, licenseExpiresAt: license.expiresAt, sessionExpiresAt: session.expiresAt };
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  async unbind(input) {
+    return this.#withRetry(() => this.#unbindOnce(input));
+  }
+
+  async #unbindOnce(input) {
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const application = await this.#lockActiveApplication(connection, input.appId);
+      const [sessionRows] = await connection.execute(
+        'SELECT payload FROM client_sessions WHERE app_id = ? AND token_digest = ? FOR UPDATE',
+        [input.appId, input.sessionDigest],
+      );
+      const session = sessionRows[0] ? parsePayload(sessionRows[0].payload) : null;
+      if (!session || Date.parse(session.expiresAt) <= input.nowMilliseconds) {
+        throw new AppError('SESSION_EXPIRED', 'Verification session is invalid or expired', 401);
+      }
+      const [bindingRows] = await connection.execute(
+        'SELECT payload FROM device_bindings WHERE id = ? FOR UPDATE',
+        [session.bindingId],
+      );
+      const binding = bindingRows[0] ? parsePayload(bindingRows[0].payload) : null;
+      if (!binding || binding.deviceDigest !== input.deviceDigest || binding.status !== 'active') {
+        throw new AppError('DEVICE_MISMATCH', 'The verification device does not match the binding', 401);
+      }
+      binding.status = 'revoked';
+      binding.lastVerifiedAt = input.now;
+      binding.lastClientVersion = input.clientVersion || binding.lastClientVersion;
+      binding.lastIpAddress = input.clientIp || binding.lastIpAddress;
+      binding.revokedAt = input.now;
+      binding.updatedAt = input.now;
+      await this.#saveBinding(connection, binding);
+      const [deleteResult] = await connection.execute(
+        'DELETE FROM client_sessions WHERE binding_id = ?',
+        [binding.id],
+      );
+      const sessionsRevoked = Number(deleteResult.affectedRows ?? 0);
+      await this.#appendLog(connection, {
+        merchantId: binding.merchantId,
+        appId: input.appId,
+        licenseId: binding.licenseId,
+        bindingId: binding.id,
+        event: 'unbind',
+        resultCode: 'DEVICE_UNBOUND',
+        clientVersion: input.clientVersion,
+        createdAt: input.now,
+      });
+      await connection.commit();
+      return {
+        application,
+        licenseId: binding.licenseId,
+        bindingId: binding.id,
+        sessionsRevoked,
+      };
     } catch (error) {
       await connection.rollback();
       throw error;

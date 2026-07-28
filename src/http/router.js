@@ -127,10 +127,13 @@ export class Router {
         }
       }
 
-      const body = await readJsonBody(request, this.config.maxBodyBytes);
+      const body = route.options.rawBody
+        ? {}
+        : await readJsonBody(request, this.config.maxBodyBytes);
       const context = {
         request,
         requestId,
+        clientIp: remoteAddress,
         params,
         query: url.searchParams,
         body,

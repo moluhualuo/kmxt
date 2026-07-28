@@ -21,16 +21,20 @@ if (-not (Test-Path -LiteralPath (Join-Path $mingwRoot 'include\nlohmann\json.hp
 }
 
 New-Item -ItemType Directory -Path $output -Force | Out-Null
-$common = @('-std=c++17', '-Wall', '-Wextra', '-Werror', "-I$(Join-Path $cppRoot 'include')")
+$common = @('-std=c++17', '-Wall', '-Wextra', '-Werror', "-I$(Join-Path $cppRoot 'include')", "-I$(Join-Path $cppRoot 'third_party')")
 
 # Author: 花落. Distributed under the MIT License.
 & $compiler @common -c (Join-Path $cppRoot 'canonical_json.cpp') -o (Join-Path $output 'canonical_json.o')
 if ($LASTEXITCODE -ne 0) { throw 'canonical_json.cpp compilation failed.' }
 & $compiler @common -c (Join-Path $cppRoot 'crypto.cpp') -o (Join-Path $output 'crypto.o')
 if ($LASTEXITCODE -ne 0) { throw 'crypto.cpp compilation failed.' }
+& $compiler @common -c (Join-Path $cppRoot 'model_crypto.cpp') -o (Join-Path $output 'model_crypto.o')
+if ($LASTEXITCODE -ne 0) { throw 'model_crypto.cpp compilation failed.' }
+& $compiler @common -c (Join-Path $cppRoot 'validation.cpp') -o (Join-Path $output 'validation.o')
+if ($LASTEXITCODE -ne 0) { throw 'validation.cpp compilation failed.' }
 
 $library = Join-Path $output 'libkmxt_core.a'
-& $archiver rcs $library (Join-Path $output 'canonical_json.o') (Join-Path $output 'crypto.o')
+& $archiver rcs $library (Join-Path $output 'canonical_json.o') (Join-Path $output 'crypto.o') (Join-Path $output 'model_crypto.o') (Join-Path $output 'validation.o')
 if ($LASTEXITCODE -ne 0) { throw 'Static library creation failed.' }
 
 $executable = Join-Path $output 'kmxt_core_test.exe'

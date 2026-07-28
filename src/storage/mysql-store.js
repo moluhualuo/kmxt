@@ -11,6 +11,8 @@ import { MysqlApplicationRepository } from './repositories/mysql-application-rep
 import { MysqlProductRepository } from './repositories/mysql-product-repository.js';
 import { MysqlAuditRepository } from './repositories/mysql-audit-repository.js';
 import { MysqlMaintenanceRepository } from './repositories/mysql-maintenance-repository.js';
+import { MysqlOnlineDeviceRepository } from './repositories/mysql-online-device-repository.js';
+import { MysqlModelDeliveryRepository } from './repositories/mysql-model-delivery-repository.js';
 
 const TABLES = [
   ['merchants', 'merchants'],
@@ -25,6 +27,8 @@ const TABLES = [
   ['clientSessions', 'client_sessions'],
   ['auditLogs', 'audit_logs'],
   ['verificationLogs', 'verification_logs'],
+  ['modelArtifacts', 'model_artifacts'],
+  ['modelLeases', 'model_leases'],
 ];
 
 const COLUMN_VALUES = {
@@ -40,6 +44,29 @@ const COLUMN_VALUES = {
   client_sessions: (item) => ({ merchant_id: item.merchantId, app_id: item.appId, license_id: item.licenseId, binding_id: item.bindingId, token_digest: item.tokenDigest, expires_at: item.expiresAt }),
   audit_logs: (item) => ({ merchant_id: item.merchantId, actor_id: item.actorUserId, action: item.action, created_at: item.createdAt }),
   verification_logs: (item) => ({ merchant_id: item.merchantId, app_id: item.appId, license_id: item.licenseId, binding_id: item.bindingId, event: item.event, result_code: item.resultCode, created_at: item.createdAt }),
+  model_artifacts: (item) => ({
+    merchant_id: item.merchantId,
+    app_id: item.appId,
+    name: item.name,
+    version: item.version,
+    format: item.format,
+    status: item.status,
+    cipher_sha256: item.cipherSha256,
+    size: item.size,
+    created_at: item.createdAt,
+  }),
+  model_leases: (item) => ({
+    merchant_id: item.merchantId,
+    app_id: item.appId,
+    artifact_id: item.artifactId,
+    license_id: item.licenseId,
+    binding_id: item.bindingId,
+    jti: item.jti,
+    client_key_fingerprint: item.clientKeyFingerprint,
+    status: item.status,
+    expires_at: item.expiresAt,
+    created_at: item.createdAt,
+  }),
 };
 
 function clone(value) { return structuredClone(value); }
@@ -74,6 +101,7 @@ export class MysqlStore extends StateStore {
       enableKeepAlive: true,
     });
     await this.pool.query('SELECT 1');
+    const modelDelivery = new MysqlModelDeliveryRepository(this.pool);
     this.repositories = {
       dashboard: new MysqlDashboardRepository(this.pool),
       orders: new MysqlOrderRepository(this.pool),
@@ -84,7 +112,9 @@ export class MysqlStore extends StateStore {
       applications: new MysqlApplicationRepository(this.pool),
       products: new MysqlProductRepository(this.pool),
       audit: new MysqlAuditRepository(this.pool),
-      maintenance: new MysqlMaintenanceRepository(this.pool),
+      maintenance: new MysqlMaintenanceRepository(this.pool, modelDelivery),
+      onlineDevices: new MysqlOnlineDeviceRepository(this.pool),
+      modelDelivery,
     };
     const [metaRows] = await this.pool.query('SELECT schema_version FROM kmxt_meta WHERE singleton_id = 1');
     if (!metaRows.length) throw new Error('MySQL schema is not initialized; run `node cli/kmxt.js migrate`');

@@ -39,8 +39,6 @@ class MainActivity : Activity() {
     private fun demoConfig() = KmxtConfig(
         baseUrl = BuildConfig.KMXT_BASE_URL,
         appId = BuildConfig.KMXT_APP_ID,
-        keyId = BuildConfig.KMXT_KEY_ID,
-        publicKey = BuildConfig.KMXT_PUBLIC_KEY.replace("\\n", "\n"),
     )
 
     private fun buildContent(): ScrollView {
@@ -62,13 +60,14 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER
             }, matchWidth())
             addView(TextView(context).apply {
-                text = "替换 BuildConfig 中的 appId、keyId 和公钥后，可测试激活与心跳。"
+                text = "替换 BuildConfig 中的 appId，并在 native trust store 配置当前包名后，可测试激活与心跳。"
                 textSize = 14f
                 gravity = Gravity.CENTER
             }, matchWidth(top = 12))
             addView(licenseInput, matchWidth(top = 28))
             addView(button("激活卡密") { activate() }, matchWidth(top = 18))
             addView(button("验证会话") { verify() }, matchWidth(top = 12))
+            addView(button("主动解绑设备") { unbind() }, matchWidth(top = 12))
             addView(button("清除会话") {
                 client.clearSession()
                 statusText.text = "本机会话已清除"
@@ -94,6 +93,18 @@ class MainActivity : Activity() {
 
     private fun verify() = scope.launch {
         runSdkCall("验证") { client.verify() }
+    }
+
+    private fun unbind() = scope.launch {
+        statusText.text = "解绑中..."
+        try {
+            val status = client.unbind()
+            statusText.text = "解绑成功\ncode=${status.code}\nbindingId=${status.bindingId}\nsessionsRevoked=${status.sessionsRevoked}"
+        } catch (error: LicenseException) {
+            statusText.text = "解绑失败\ncode=${error.code}\nmessage=${error.message}"
+        } catch (error: Exception) {
+            statusText.text = "解绑异常\n${error.javaClass.simpleName}: ${error.message}"
+        }
     }
 
     private suspend fun runSdkCall(label: String, call: suspend () -> top.moluhualuo.kmxt.AuthorizationStatus) {

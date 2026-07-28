@@ -1,14 +1,34 @@
 #include "kmxt/core.hpp"
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <iomanip>
 #include <memory>
 #include <sstream>
 #include <vector>
 
-namespace {
-std::vector<unsigned char> decode_base64url(std::string value) {
+namespace kmxt {
+std::string encode_base64url(const std::vector<unsigned char>& value) {
+    std::string encoded(((value.size() + 2) / 3) * 4, '\0');
+    const int size = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),
+        value.data(), static_cast<int>(value.size()));
+    encoded.resize(static_cast<std::size_t>(size));
+    for (auto& character : encoded) {
+        if (character == '+') character = '-';
+        else if (character == '/') character = '_';
+    }
+    while (!encoded.empty() && encoded.back() == '=') encoded.pop_back();
+    return encoded;
+}
+
+std::vector<unsigned char> decode_base64url(const std::string& encoded) {
+    if (encoded.empty() || encoded.size() % 4 == 1
+        || !std::all_of(encoded.begin(), encoded.end(), [](unsigned char c) {
+            return std::isalnum(c) || c == '-' || c == '_';
+        })) return {};
+    std::string value = encoded;
     for (auto& character : value) {
         if (character == '-') character = '+';
         else if (character == '_') character = '/';
@@ -20,11 +40,9 @@ std::vector<unsigned char> decode_base64url(std::string value) {
     if (length < 0) return {};
     while (!value.empty() && value.back() == '=') { --length; value.pop_back(); }
     output.resize(static_cast<std::size_t>(length));
+    if (kmxt::encode_base64url(output) != encoded) return {};
     return output;
 }
-}
-
-namespace kmxt {
 std::string sha256_hex(const std::string& value) {
     std::array<unsigned char, 32> digest{};
     unsigned int length = 0;
@@ -45,7 +63,7 @@ bool verify_ed25519(const std::string& payload, const std::string& encoded_signa
         BIO_new_mem_buf(public_key_pem.data(), static_cast<int>(public_key_pem.size())), BIO_free);
     auto key = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>(
         PEM_read_bio_PUBKEY(bio.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
-    if (!key || signature.empty() || EVP_PKEY_id(key.get()) != EVP_PKEY_ED25519) return false;
+    if (!key || signature.size() != 64 || EVP_PKEY_id(key.get()) != EVP_PKEY_ED25519) return false;
     auto context = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>(EVP_MD_CTX_new(), EVP_MD_CTX_free);
     if (EVP_DigestVerifyInit(context.get(), nullptr, nullptr, nullptr, key.get()) != 1) return false;
     return EVP_DigestVerify(context.get(), signature.data(), signature.size(),

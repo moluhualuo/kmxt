@@ -1,0 +1,7 @@
+/* Author: 花落. MIT License. */
+{
+    global:
+        JNI_OnLoad;
+    local:
+        *;
+};

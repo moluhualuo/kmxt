@@ -6,6 +6,11 @@
 
 要求 Android Gradle Plugin 8.7、JDK 17、NDK、CMake 3.22 和 vcpkg。以 `sdk/android/vcpkg.json` 安装 Android arm64-v8a 目标的 `openssl`。nlohmann/json 使用仓库内固定的纯头文件，不走 vcpkg CMake 包，避免 Android NDK 构建误引入 Windows/MSYS2 系统头。C++ 核心使用 C++17，并先构建为 `kmxt_core` 静态库，再链接到 `kmxt_jni`。
 
+仓库根 `.gitignore` 排除 Gradle、Kotlin、CMake、各模块 `build/` 和本地
+`sdk/android/third_party/` 构建树。构建所需的 Android arm64 OpenSSL 头文件与静态库固定在
+已跟踪的 `sdk/android/prebuilt/openssl/3.6.3/arm64-v8a`；不要提交上游完整源码树、对象文件、
+依赖文件或测试密钥材料。AAR、APK 和本地 CMake 输出仍属于生成物。
+
 ```bash
 cd sdk/android
 ./gradlew :kmxt-sdk:assembleRelease -Pandroid.injected.cmake.configure.arguments=-DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake
@@ -22,16 +27,17 @@ gradle :kmxt-sdk:assembleRelease `
 
 当前本机构建使用 OpenSSL `3.6.3`，源码包 SHA-512 与 vcpkg `ports/openssl` 中的校验值一致。由于本机没有完整 Visual Studio，vcpkg 的 host 依赖构建会卡在 `x64-windows`/PowerShell Core 下载阶段；因此本次使用 MSYS2 Perl、mingw32-make 与 Android NDK clang 手工生成 Android arm64 OpenSSL root。
 
-项目内 SDK 目录保留源码库和构建产物：
+仓库只保留 Android arm64 预编译 root：
 
-- 源码包：`sdk/android/third_party/openssl/3.6.3/openssl-3.6.3.tar.gz`
-- 源码树：`sdk/android/third_party/openssl/3.6.3/source`
-- Android arm64 预编译 root：`sdk/android/prebuilt/openssl/3.6.3/arm64-v8a`
+- `sdk/android/prebuilt/openssl/3.6.3/arm64-v8a`
+
+如需复现该预编译库，应从 OpenSSL 官方发布源下载 3.6.3 源码包，在仓库外的临时
+工作目录验证校验值并构建，完成后只更新上述 prebuilt root 及其许可/校验文档。
 
 复现构建命令：
 
 ```bash
-cd /f/kmxt/sdk/android/third_party/openssl/3.6.3/source
+cd /tmp/openssl-3.6.3
 export ANDROID_NDK_ROOT=/d/exploitation/cmdline-tools/androidSDK/ndk/28.0.13004108
 export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
 export PATH=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/windows-x86_64/bin:/usr/bin:/mingw64/bin:$PATH
@@ -53,7 +59,7 @@ D:\ck\gardle\gradle-8.14.2\bin\gradle.bat --no-daemon --console=plain `
 当前 release AAR：
 
 - 路径：`sdk/android/kmxt-sdk/build/outputs/aar/kmxt-sdk-release.aar`
-- SHA-256：`C6ACCB3E5CE38021E6D7F3DFC99C30C1AEE52AC22BBC65CD981AAE616E67E239`
+- SHA-256：`0C12CD230B42386BCE7DD71FBF0323BBEBBE1936D9268ED6012993103279AFD3`
 - Native：仅包含 `jni/arm64-v8a/libkmxt_jni.so`
 - ELF：`ELF64`、`DYN`、`AArch64`
 - OpenSSL 静态库：`sdk/android/prebuilt/openssl/3.6.3/arm64-v8a/lib/libcrypto.a`，SHA-256 `551EC903C9AB7DF25468D368009F78C2BEE5742A93375DD5806F5F47ED62EDD1`
@@ -66,7 +72,7 @@ Android library manifest 提供默认 PNG 应用图标 `@mipmap/kmxt_launcher`�
 
 ## Demo App
 
-`sdk/android/demo-app` 是本地接入示例应用，不参与线上部署。它依赖 `:kmxt-sdk`，提供卡密输入、激活、会话验证和清除会话三个按钮，并使用 PNG launcher 图标，避免把 instrumentation test APK 当作正式应用安装。
+`sdk/android/demo-app` 是本地接入示例应用，不参与线上部署。它依赖 `:kmxt-sdk`，提供卡密输入、激活、会话验证、主动解绑和仅清除本机会话按钮，并使用 PNG launcher 图标，避免把 instrumentation test APK 当作正式应用安装。
 
 默认配置位于 `demo-app/build.gradle.kts` 的 BuildConfig 字段：
 
@@ -88,22 +94,31 @@ D:\ck\gardle\gradle-8.14.2\bin\gradle.bat --no-daemon --console=plain :demo-app:
 
 ## 配置与接口
 
-从后台“程序”页下载 JSON 和 `.hpp`，或调用 `GET /api/v1/apps/:appId/client-config`。应用只内置 `baseUrl`、`appId`、`keyId`、Ed25519 公钥和协议版本，不内置卡密或私钥。
+从后台“程序”页下载 JSON 和 `.hpp`，或调用 `GET /api/v1/apps/:appId/client-config`。ScreenYolo app-specific AAR 的 Kotlin 配置只内置 `baseUrl`、`appId` 和协议版本；`keyId`、Ed25519 公钥和 applicationId 映射编译进 native trust store，不内置卡密或私钥。
 
 ```kotlin
 val client = KmxtLicenseClient(context, KmxtConfig(
     baseUrl = "https://kmxt.moluhualuo.top",
     appId = BuildConfig.KMXT_APP_ID,
-    keyId = BuildConfig.KMXT_KEY_ID,
-    publicKey = BuildConfig.KMXT_PUBLIC_KEY,
 ))
 
 val activated = client.activate(licenseKey)
 val verified = client.verify()
+val unbound = client.unbind()
+val lease = client.requestModelLease(artifactId)
+try {
+    // Read the local .vmp packed in APK assets, verify cipherSha256/size, then let the
+    // one-use native handle decrypt. Ciphertext ships with the APK; the server never hosts it.
+    nativeModelLoader.openEncrypted(lease.decrypt(ciphertext))
+} finally {
+    lease.wipe()
+}
 client.clearSession()
 ```
 
-三个主接口均不在主线程执行网络。`activate` 和 `verify` 只有在 HTTPS、JSON、keyId、Ed25519、appId 与到期时间全部通过时才返回授权；网络、TLS、解析、签名或到期失败均拒绝授权。会话令牌由 Android Keystore 中不可导出的 AES-GCM 密钥加密后保存。
+`activate`、`verify` 和 `unbind` 均不在主线程执行网络。每次调用独立保存本次请求 Nonce，并在 Ed25519 验签后严格比较签名载荷的 `requestNonce`；旧响应重放、字段缺失或错 nonce 均失败关闭。`activate` 和 `verify` 只有在 HTTPS、JSON、keyId、Ed25519、appId、requestNonce 与到期时间全部通过时才返回授权；`unbind` 只有在签名、固定程序、requestNonce、`unbound=true` 和 `DEVICE_UNBOUND` 全部通过后才清除 Keystore 加密会话。网络、TLS、解析或签名失败均不会误报解绑成功。会话令牌由 Android Keystore 中不可导出的 AES-GCM 密钥加密后保存。
+
+`unbind()` 返回 `DeviceUnbindStatus`，包含 `bindingId` 和服务端实际撤销的 `sessionsRevoked`。若服务端返回 `SESSION_EXPIRED` 或 `DEVICE_MISMATCH`，SDK 会清除已经不可继续使用的本地会话；其他网络或签名错误保留会话，调用方可在网络恢复后重试。
 
 `KmxtLifecycleVerifier` 可注册到进程或 Activity 生命周期：每次前台恢复立即 `verify()`，成功后按签名响应中的 `heartbeatAfterSeconds` 循环；失败即停止并通过监听器返回结构化错误。SDK 不实现离线宽限。
 
@@ -115,7 +130,7 @@ Windows 本机也可直接复用 MSYS2 MinGW64 环境，无需 CMake：
 powershell -ExecutionPolicy Bypass -File scripts/test-native.ps1
 ```
 
-脚本以 `-Wall -Wextra -Werror` 编译两个核心源文件，生成 `.runtime/native-test/libkmxt_core.a` 静态库并运行相同固定向量。可用 `-MsysRoot` 指定不同的 MSYS2 根目录。
+脚本以 `-Wall -Wextra -Werror` 编译 canonical JSON、OpenSSL crypto、native lease crypto 和 validator，生成 `.runtime/native-test/libkmxt_core.a` 静态库并运行固定向量。可用 `-MsysRoot` 指定不同的 MSYS2 根目录。
 
 本机验证使用 Gradle 8.14.2、NDK 28、API 33 arm64 真机。`androidTest` 覆盖设备指纹同进程稳定性、Keystore 会话保存/读取/清除，以及明文 HTTP 配置拒绝；运行 `connectedDebugAndroidTest` 时同样需要提供 Android arm64 OpenSSL 根目录。本次在 Xiaomi Mi 10 / Android 13 上完成 3 个 instrumentation tests，`lintRelease`、`assembleRelease`、host native 向量、Node 测试和 Node 语法检查均通过。
 
@@ -126,3 +141,24 @@ powershell -ExecutionPolicy Bypass -File scripts/test-native.ps1
 ## 错误
 
 `LicenseException.code` 区分网络、TLS、响应解析、签名、公钥、程序、授权到期、会话到期、设备不符、未激活和服务拒绝。调用方在任何异常下都必须关闭受保护功能，不得把 HTTP 200 本身当成授权成功。
+
+## 模型租约
+
+`requestModelLease(artifactId)` 需要已有 Keystore 加密会话。SDK 每次调用在 native 生成
+临时 X25519 密钥对和新的 Nonce；收到响应后在 C++ 依次检查 Ed25519、
+固定 `keyId/appId/artifactId`、原请求 Nonce、客户端公钥指纹、租约时间和
+包裹算法，然后使用 HKDF-SHA256/AES-GCM 解出 32 字节 DEK 并保存为一次性 handle。
+HTTP、解析、验签、解包等任意失败以及协程取消都会调用 native cancel，立即擦除尚未
+消费的 X25519 私钥和请求 Nonce；只有成功交付 `ModelLease` 时才保留其 handle。
+
+`ModelLease` 不暴露 `contentKey`；`decrypt()` 消费 native handle，调用方仍必须在
+`finally` 中执行 `wipe()` 清理未使用 handle；不得写入 SharedPreferences、数据库、日志或缓存。
+密文 `.vmp` 随 APK 打包在本地 assets，服务端不托管密文；调用方从本地读入密文后先用
+租约签发的 `cipherSha256/size` 校验完整性，再交 native 用 DEK 解密。Native 以签名载荷的 `expiresAt` 作为 handle 硬期限，并限制
+内存 handle 表容量；到期 handle 立即不可用，其 DEK 和物理表项在后续 handle 操作时
+惰性擦除。清理后容量仍满则拒绝创建新 handle，不覆盖仍有效条目。
+
+`clearSession()` 会同时清除 Keystore 会话、native 授权状态和全部未消费 DEK handle。
+心跳、解绑或租约验证识别出 `SESSION_EXPIRED`/`DEVICE_MISMATCH` 后执行该清理；服务端
+撤销不会凭空推送到离线进程，客户端必须持续在线验证。当前实现使用进程内临时 X25519 私钥；硬件 Keystore
+持有证明与服务端 attestation 校验是下一阶段，不应把软件设备指纹视为硬件证明。

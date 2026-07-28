@@ -454,6 +454,11 @@ a:focus-visible {
   line-height: 1;
 }
 
+.metric-value.compact {
+  font-size: 1.25rem;
+  line-height: 1.2;
+}
+
 .metric-icon {
   width: 38px;
   height: 38px;
@@ -532,6 +537,20 @@ tbody tr:last-child td {
   border-bottom: 0;
 }
 
+.model-artifacts-table {
+  min-width: 1080px;
+}
+
+.model-artifacts-table th {
+  white-space: nowrap;
+}
+
+.model-artifacts-table a {
+  color: var(--primary);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 .cell-primary {
   font-weight: 700;
 }
@@ -546,6 +565,30 @@ tbody tr:last-child td {
 .mono {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 0.82rem;
+}
+
+.uuid-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent, #4c8bf5);
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.uuid-copy:hover {
+  color: var(--accent-strong, #2f6fe0);
+  text-decoration: underline;
+}
+
+.uuid-copy svg {
+  width: 12px;
+  height: 12px;
 }
 
 .badge {
@@ -575,12 +618,27 @@ tbody tr:last-child td {
   color: var(--primary);
 }
 
+.badge.online {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.badge.offline {
+  background: var(--surface-strong);
+  color: var(--text-muted);
+}
+
 .badge.fulfilled {
   background: var(--primary-soft);
   color: var(--primary);
 }
 
 .badge.pending {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.badge.draft {
   background: var(--warning-soft);
   color: var(--warning);
 }

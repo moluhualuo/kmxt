@@ -1,6 +1,6 @@
 # KMXT 卡密验证服务
 
-KMXT 是一个使用 Node.js 20 开发的多租户卡密服务。当前版本 `0.6.0` 支持 MySQL 8 + Redis 生产存储与 Android NDK SDK。平台可创建多个商户，每个商户可管理多个独立程序；卡密、设备、签名密钥和日志均按 `merchantId` 与 `appId` 隔离。
+KMXT 是一个使用 Node.js 20 开发的多租户卡密服务。当前版本 `0.7.0` 支持 MySQL 8 + Redis 生产存储、Android NDK SDK 和设备绑定的加密模型租约。平台可创建多个商户，每个商户可管理多个独立程序；卡密、设备、签名密钥和日志均按 `merchantId` 与 `appId` 隔离。
 
 作者：花落  
 许可证：MIT
@@ -22,6 +22,7 @@ KMXT 是一个使用 Node.js 20 开发的多租户卡密服务。当前版本 `0
 - Node.js SDK 及 Android API 24 / arm64-v8a C++17 + Kotlin SDK
 - 内置响应式 Web 管理后台
 - 商户独立用户店铺、无支付订单和人工审核发卡
+- 独立 artifact 清单、CDN 密文模型和 X25519/Ed25519 短期模型密钥下发
 
 ## 快速启动
 
@@ -29,9 +30,11 @@ KMXT 是一个使用 Node.js 20 开发的多租户卡密服务。当前版本 `0
 
 ```powershell
 node cli/kmxt.js init
-node cli/kmxt.js create-admin --username admin --password "Change-This-Password!"
+node cli/kmxt.js create-admin --username admin --password-file .\deploy\secrets\admin_password
 npm start
 ```
+
+请先通过密码管理器或 secret 管理系统把初始强密码写入权限受限的 UTF-8 文本文件。生产环境优先使用 `--password-file`；不要把密码放入命令行参数、Shell 历史或版本库。`deploy/secrets/` 已被 Git 忽略，Compose 部署会把 `admin_password` 挂载为 `/run/secrets/kmxt_admin_password`。
 
 默认监听 `http://127.0.0.1:8080`，健康检查地址为：
 
@@ -60,7 +63,7 @@ $body = @{ username = 'admin'; password = 'Change-This-Password!' } | ConvertTo-
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/api/v1/auth/login -ContentType application/json -Body $body
 ```
 
-`create-admin` 只允许在不存在平台管理员时执行。新生成卡密使用根密钥派生的密钥加密保存；平台管理员或所属商户管理员可在后台显式查看单张卡密，查看会写入审计记录。卡密列表、批次记录和日志不返回明文。
+`create-admin` 只允许在不存在平台管理员时执行，并支持优先从 `--password-file` 读取初始密码；兼容的 `--password` 参数只建议用于隔离的本地开发。新生成卡密使用根密钥派生的密钥加密保存；平台管理员或所属商户管理员可在后台显式查看单张卡密，查看会写入审计记录。卡密列表、批次记录和日志不返回明文。
 
 ## 常用命令
 

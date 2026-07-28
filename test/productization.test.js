@@ -42,8 +42,20 @@ test('0.6.0 management services update resources, list batches, and revoke disab
     state.adminSessions.push({ id: 'expired-admin', userId: platform.id, tokenDigest: 'x', createdAt: new Date(0).toISOString(), expiresAt: new Date(0).toISOString() });
     state.clientSessions.push({ id: 'expired-client', merchantId: merchant.id, appId: app.id, licenseId: 'license', bindingId: 'binding', tokenDigest: 'y', createdAt: new Date(0).toISOString(), expiresAt: new Date(0).toISOString() });
     state.verificationLogs.push({ id: 'old-log', merchantId: merchant.id, appId: app.id, licenseId: 'license', bindingId: 'binding', event: 'verify', resultCode: 'OK', createdAt: new Date(0).toISOString() });
+    state.modelLeases.push(
+      { id: 'expired-model-lease', licenseId: 'license', status: 'active', expiresAt: new Date(0).toISOString() },
+      { id: 'retained-revoked-model-lease', licenseId: 'license', status: 'revoked', expiresAt: new Date(Date.now() + 60000).toISOString() },
+    );
   });
-  assert.deepEqual(await runtime.services.maintenance.cleanupSessions(), { expiredAdminSessions: 1, expiredClientSessions: 1 });
+  assert.deepEqual(await runtime.services.maintenance.cleanupSessions(), {
+    expiredAdminSessions: 1,
+    expiredClientSessions: 1,
+    expiredModelLeases: 1,
+  });
+  assert.deepEqual(
+    await runtime.store.read((state) => state.modelLeases.map((lease) => lease.id)),
+    ['retained-revoked-model-lease'],
+  );
   const logCleanup = await runtime.services.maintenance.cleanupVerificationLogs(30);
   assert.equal(logCleanup.deletedVerificationLogs, 1);
   const auditActions = await runtime.store.read((state) => state.auditLogs.map((item) => item.action));

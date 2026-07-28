@@ -13,6 +13,7 @@ import {
   findApplicationOrThrow,
   findMerchantOrThrow,
 } from './access-control.js';
+import { assertClientIntegrity, parseClientIntegrityInput } from './client-integrity.js';
 
 function ensureLicenseUsable(license, now) {
   if (license.status === 'disabled') {
@@ -37,6 +38,7 @@ function appendVerificationLog(state, entry) {
   });
 }
 
+// Author: 花落. The signed authorization contract is provided under the MIT License.
 export class VerificationService {
   constructor(store, rootSecret, config, securityState) {
     this.store = store;
@@ -51,7 +53,11 @@ export class VerificationService {
     const deviceId = requireString(input.deviceId, 'deviceId', { min: 8, max: 256, normalize: false });
     const deviceLabel = optionalString(input.deviceLabel, 'deviceLabel', { min: 1, max: 100 });
     const clientVersion = optionalString(input.clientVersion, 'clientVersion', { min: 1, max: 50 });
+    const clientIp = optionalString(input.clientIp, 'clientIp', { min: 2, max: 64, normalize: false });
+    const clientIntegrity = parseClientIntegrityInput(input);
     const appSnapshot = await this.#getActiveApplication(appId);
+    // WS4 防重打包：应用注册了绑定约束时，强制校验客户端 packageName/证书指纹/versionCode。
+    assertClientIntegrity(appSnapshot, clientIntegrity);
     await this.replayGuard.assertFresh(`activate:${appId}`, input.timestamp, input.nonce);
 
     const nowMilliseconds = Date.now();
@@ -67,13 +73,14 @@ export class VerificationService {
 
     if (this.store.repositories?.verification) {
       const activation = await this.store.repositories.verification.activate({
-        appId, licenseDigest, deviceDigest, deviceLabel, clientVersion, sessionDigest,
+        appId, licenseDigest, deviceDigest, deviceLabel, clientVersion, clientIp, sessionDigest,
         nowMilliseconds, now, clientSessionTtlSeconds: this.config.clientSessionTtlSeconds,
       });
       return this.#sign(activation.application, {
         licensed: true, code: 'LICENSE_VALID', appId, licenseId: activation.licenseId, bindingId: activation.bindingId,
         sessionToken, issuedAt: now, licenseExpiresAt: activation.licenseExpiresAt, sessionExpiresAt: activation.sessionExpiresAt,
         heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds, offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
+        requestNonce: input.nonce,
       });
     }
 
@@ -122,6 +129,8 @@ export class VerificationService {
           status: 'active',
           boundAt: now,
           lastVerifiedAt: now,
+          lastClientVersion: clientVersion,
+          lastIpAddress: clientIp,
           revokedAt: null,
           updatedAt: now,
         };
@@ -129,6 +138,8 @@ export class VerificationService {
       } else {
         binding.lastVerifiedAt = now;
         binding.deviceLabel = deviceLabel || binding.deviceLabel;
+        binding.lastClientVersion = clientVersion || binding.lastClientVersion;
+        binding.lastIpAddress = clientIp || binding.lastIpAddress;
         binding.updatedAt = now;
       }
 
@@ -149,6 +160,8 @@ export class VerificationService {
         createdAt: now,
         expiresAt: sessionExpiresAt,
         lastVerifiedAt: now,
+        clientVersion,
+        ipAddress: clientIp,
       });
       appendVerificationLog(state, {
         merchantId: license.merchantId,
@@ -180,6 +193,7 @@ export class VerificationService {
       sessionExpiresAt: activation.sessionExpiresAt,
       heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds,
       offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
+      requestNonce: input.nonce,
     });
   }
 
@@ -192,7 +206,11 @@ export class VerificationService {
     });
     const deviceId = requireString(input.deviceId, 'deviceId', { min: 8, max: 256, normalize: false });
     const clientVersion = optionalString(input.clientVersion, 'clientVersion', { min: 1, max: 50 });
+    const clientIp = optionalString(input.clientIp, 'clientIp', { min: 2, max: 64, normalize: false });
+    const clientIntegrity = parseClientIntegrityInput(input);
     const appSnapshot = await this.#getActiveApplication(appId);
+    // WS4 防重打包：应用注册了绑定约束时，强制校验客户端 packageName/证书指纹/versionCode。
+    assertClientIntegrity(appSnapshot, clientIntegrity);
     await this.replayGuard.assertFresh(`verify:${appId}`, input.timestamp, input.nonce);
 
     const nowMilliseconds = Date.now();
@@ -202,13 +220,14 @@ export class VerificationService {
 
     if (this.store.repositories?.verification) {
       const verification = await this.store.repositories.verification.verify({
-        appId, sessionDigest, deviceDigest, clientVersion, nowMilliseconds, now,
+        appId, sessionDigest, deviceDigest, clientVersion, clientIp, nowMilliseconds, now,
         clientSessionTtlSeconds: this.config.clientSessionTtlSeconds,
       });
       return this.#sign(verification.application, {
         licensed: true, code: 'LICENSE_VALID', appId, licenseId: verification.licenseId, bindingId: verification.bindingId,
         issuedAt: now, licenseExpiresAt: verification.licenseExpiresAt, sessionExpiresAt: verification.sessionExpiresAt,
         heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds, offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
+        requestNonce: input.nonce,
       });
     }
 
@@ -236,8 +255,12 @@ export class VerificationService {
       }
 
       binding.lastVerifiedAt = now;
+      binding.lastClientVersion = clientVersion || binding.lastClientVersion;
+      binding.lastIpAddress = clientIp || binding.lastIpAddress;
       binding.updatedAt = now;
       session.lastVerifiedAt = now;
+      session.clientVersion = clientVersion || session.clientVersion;
+      session.ipAddress = clientIp || session.ipAddress;
       session.expiresAt = new Date(Math.min(
         nowMilliseconds + this.config.clientSessionTtlSeconds * 1000,
         Date.parse(license.expiresAt),
@@ -271,6 +294,101 @@ export class VerificationService {
       sessionExpiresAt: verification.sessionExpiresAt,
       heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds,
       offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
+      requestNonce: input.nonce,
+    });
+  }
+
+  async unbind(input) {
+    const appId = requireString(input.appId, 'appId', { min: 36, max: 36 });
+    const sessionToken = requireString(input.sessionToken, 'sessionToken', {
+      min: 32,
+      max: 128,
+      normalize: false,
+    });
+    const deviceId = requireString(input.deviceId, 'deviceId', { min: 8, max: 256, normalize: false });
+    const clientVersion = optionalString(input.clientVersion, 'clientVersion', { min: 1, max: 50 });
+    const clientIp = optionalString(input.clientIp, 'clientIp', { min: 2, max: 64, normalize: false });
+    await this.replayGuard.assertFresh(`unbind:${appId}`, input.timestamp, input.nonce);
+
+    const nowMilliseconds = Date.now();
+    const now = new Date(nowMilliseconds).toISOString();
+    const sessionDigest = digestSecret(this.rootSecret, 'client-session', sessionToken);
+    const deviceDigest = digestSecret(this.rootSecret, `device:${appId}`, deviceId);
+
+    if (this.store.repositories?.verification) {
+      const result = await this.store.repositories.verification.unbind({
+        appId,
+        sessionDigest,
+        deviceDigest,
+        clientVersion,
+        clientIp,
+        nowMilliseconds,
+        now,
+      });
+      return this.#sign(result.application, {
+        unbound: true,
+        code: 'DEVICE_UNBOUND',
+        appId,
+        licenseId: result.licenseId,
+        bindingId: result.bindingId,
+        sessionsRevoked: result.sessionsRevoked,
+        issuedAt: now,
+        requestNonce: input.nonce,
+      });
+    }
+
+    const result = await this.store.transaction((state) => {
+      const application = findApplicationOrThrow(state, appId, { requireActive: true });
+      findMerchantOrThrow(state, application.merchantId, { requireActive: true });
+      const session = state.clientSessions.find(
+        (item) => item.appId === appId && item.tokenDigest === sessionDigest,
+      );
+      if (!session || Date.parse(session.expiresAt) <= nowMilliseconds) {
+        throw new AppError('SESSION_EXPIRED', 'Verification session is invalid or expired', 401);
+      }
+      const binding = state.deviceBindings.find(
+        (item) => item.id === session.bindingId
+          && item.deviceDigest === deviceDigest
+          && item.status === 'active',
+      );
+      if (!binding) {
+        throw new AppError('DEVICE_MISMATCH', 'The verification device does not match the binding', 401);
+      }
+      binding.status = 'revoked';
+      binding.lastVerifiedAt = now;
+      binding.lastClientVersion = clientVersion || binding.lastClientVersion;
+      binding.lastIpAddress = clientIp || binding.lastIpAddress;
+      binding.revokedAt = now;
+      binding.updatedAt = now;
+      const previousSessionCount = state.clientSessions.length;
+      state.clientSessions = state.clientSessions.filter((item) => item.bindingId !== binding.id);
+      const sessionsRevoked = previousSessionCount - state.clientSessions.length;
+      appendVerificationLog(state, {
+        merchantId: binding.merchantId,
+        appId,
+        licenseId: binding.licenseId,
+        bindingId: binding.id,
+        event: 'unbind',
+        resultCode: 'DEVICE_UNBOUND',
+        clientVersion,
+      });
+      return {
+        application,
+        licenseId: binding.licenseId,
+        bindingId: binding.id,
+        sessionsRevoked,
+      };
+    });
+
+    return this.#sign(result.application, {
+      unbound: true,
+      code: 'DEVICE_UNBOUND',
+      appId,
+      licenseId: result.licenseId,
+      bindingId: result.bindingId,
+      sessionsRevoked: result.sessionsRevoked,
+      issuedAt: now,
+      requestNonce: input.nonce,
     });
   }
 

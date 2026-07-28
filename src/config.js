@@ -58,6 +58,9 @@ export function loadConfig(overrides = {}) {
     maxLicenseBatch: readInteger('KMXT_MAX_LICENSE_BATCH', 1000),
     publicBaseUrl: (process.env.KMXT_PUBLIC_BASE_URL || 'http://127.0.0.1:8080').replace(/\/$/, ''),
     protocolVersion: readInteger('KMXT_PROTOCOL_VERSION', 1),
+    modelLeaseTtlSeconds: readInteger('KMXT_MODEL_LEASE_TTL_SECONDS', 600, 60),
+    modelLeaseMaxTtlSeconds: readInteger('KMXT_MODEL_LEASE_MAX_TTL_SECONDS', 900, 60),
+    modelArtifactMaxBytes: readInteger('KMXT_MODEL_ARTIFACT_MAX_BYTES', 2 * 1024 * 1024 * 1024, 1),
     trustedProxyCidrs: (process.env.KMXT_TRUSTED_PROXY_CIDRS || '')
       .split(',').map((value) => value.trim()).filter(Boolean),
     mysql: {
@@ -81,6 +84,9 @@ export function loadConfig(overrides = {}) {
 
   if (!['json', 'mysql'].includes(config.storageDriver)) {
     throw new Error('KMXT_STORAGE_DRIVER must be json or mysql');
+  }
+  if (config.modelLeaseMaxTtlSeconds < config.modelLeaseTtlSeconds) {
+    throw new Error('KMXT_MODEL_LEASE_MAX_TTL_SECONDS must be >= KMXT_MODEL_LEASE_TTL_SECONDS');
   }
 
   return Object.freeze(config);

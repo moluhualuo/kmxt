@@ -12,9 +12,16 @@ export class MaintenanceService {
     return this.store.transaction((state) => {
       const adminBefore = state.adminSessions.length;
       const clientBefore = state.clientSessions.length;
+      const leaseBefore = state.modelLeases.length;
       state.adminSessions = state.adminSessions.filter((item) => Date.parse(item.expiresAt) > now);
       state.clientSessions = state.clientSessions.filter((item) => Date.parse(item.expiresAt) > now);
-      const summary = { expiredAdminSessions: adminBefore - state.adminSessions.length, expiredClientSessions: clientBefore - state.clientSessions.length };
+      // Author: 花落. Expired active or revoked leases are removed under the MIT License.
+      state.modelLeases = state.modelLeases.filter((item) => Date.parse(item.expiresAt) > now);
+      const summary = {
+        expiredAdminSessions: adminBefore - state.adminSessions.length,
+        expiredClientSessions: clientBefore - state.clientSessions.length,
+        expiredModelLeases: leaseBefore - state.modelLeases.length,
+      };
       AuditService.append(state, { action: 'maintenance.sessions.cleanup', resourceType: 'maintenance', metadata: summary });
       return summary;
     });

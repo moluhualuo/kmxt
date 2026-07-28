@@ -17,7 +17,9 @@ import { store } from './state.js';
 import { renderOverviewView } from './views/overview.js';
 import { renderMerchantsView } from './views/merchants.js';
 import { renderApplicationsView } from './views/applications.js';
+import { renderModelArtifactsView } from './views/model-artifacts.js';
 import { renderLicensesView } from './views/licenses.js';
+import { renderOnlineDevicesView } from './views/online-devices.js';
 import { renderProductsView } from './views/products.js';
 import { renderOrdersView } from './views/orders.js';
 import { renderUsersView } from './views/users.js';
@@ -28,7 +30,9 @@ const VIEW_LABELS = Object.freeze({
   overview: ['总览', '授权业务概况'],
   merchants: ['商户', '平台租户管理'],
   applications: ['程序', '程序与授权策略'],
+  modelArtifacts: ['模型制品', '加密模型版本与交付状态'],
   licenses: ['卡密', '卡密与设备绑定'],
+  onlineDevices: ['在线设备', '客户端在线状态与会话控制'],
   products: ['商品', '用户购买套餐'],
   orders: ['订单', '人工审核与发卡'],
   users: ['账号', '商户账号与角色'],
@@ -68,6 +72,11 @@ function friendlyError(error) {
     USE_SELF_PASSWORD_CHANGE: '请使用修改本人密码功能。',
     USER_NOT_FOUND: '账号不存在。',
     RATE_LIMITED: '请求过于频繁，请稍后重试。',
+    ARTIFACT_EXISTS: '当前程序已经存在同名且同版本的模型制品。',
+    ARTIFACT_NOT_FOUND: '模型制品不存在或已被移除。',
+    ARTIFACT_REVOKED: '模型制品已被吊销，不能恢复；请登记新版本。',
+    ARTIFACT_UNAVAILABLE: '模型制品尚未启用或已被吊销。',
+    INVALID_INPUT: '提交的数据格式不符合要求，请检查后重试。',
     NETWORK_ERROR: '无法连接授权服务，请检查服务状态。',
   };
   return messages[error?.code] || error?.message || '操作失败。';
@@ -189,7 +198,9 @@ function availableViews(user = store.value.user) {
   }
   items.push(
     { id: 'applications', icon: 'boxes', label: '程序' },
+    { id: 'modelArtifacts', icon: 'package-check', label: '模型制品' },
     { id: 'licenses', icon: 'key-round', label: '卡密' },
+    { id: 'onlineDevices', icon: 'monitor-smartphone', label: '在线设备' },
     { id: 'products', icon: 'shopping-bag', label: '商品' },
     { id: 'orders', icon: 'receipt-text', label: '订单' },
   );
@@ -274,7 +285,9 @@ async function renderCurrentView() {
     switch (store.value.view) {
       case 'merchants': html = await renderMerchantsView(); break;
       case 'applications': html = await renderApplicationsView(); break;
+      case 'modelArtifacts': html = await renderModelArtifactsView(); break;
       case 'licenses': html = await renderLicensesView(); break;
+      case 'onlineDevices': html = await renderOnlineDevicesView(); break;
       case 'products': html = await renderProductsView(); break;
       case 'orders': html = await renderOrdersView(); break;
       case 'users': html = await renderUsersView(); break;
@@ -308,6 +321,8 @@ async function reloadContext(merchantId) {
     selectedMerchantId: merchantId,
     applications,
     selectedAppId,
+    modelArtifactStatus: '',
+    modelArtifacts: [],
     licensePage: 1,
     orderPage: 1,
     logPage: 1,
@@ -560,6 +575,84 @@ function openRejectOrder(orderId) {
   });
 }
 
+// 花落/MIT: 批量上传并自动加密模型文件，逐个调用 /api/v1/admin/artifacts/upload。
+function openUploadModelArtifact() {
+  const application = store.application;
+  if (!application || !isOwner()) return;
+  openFormDialog({
+    title: '上传并加密模型',
+    submitLabel: '开始上传',
+    wide: true,
+    content: `<div class="form-stack">
+      <p class="field-hint">可一次选择多个明文模型文件批量上传，服务端逐个加密并生成下载密文。名称/格式/大小自动从每个文件推断，内容密钥 DEK 仅服务端保存。</p>
+      <div class="form-grid">
+        <div class="field full"><label for="upload-file">模型文件（明文，可多选）</label><input type="file" class="input" id="upload-file" name="file" accept=".onnx,.param,.bin,.tflite,.dlc" multiple required autofocus></div>
+        <div class="field"><label for="upload-version">版本（可选，默认 1.0）</label><input class="input mono" id="upload-version" name="version" minlength="1" maxlength="64" placeholder="1.0"></div>
+        <div class="field"><label for="upload-edition">版本分层（可选）</label><input class="input" id="upload-edition" name="edition" maxlength="32" placeholder="例如 paid"></div>
+        <div class="field"><label for="upload-key-version">密钥版本</label><input class="input" id="upload-key-version" name="keyVersion" type="number" min="1" max="1000000" step="1" value="1" required></div>
+      </div>
+      <div id="upload-progress" class="field-hint" aria-live="polite"></div>
+    </div>`,
+    onSubmit: async (form) => {
+      const fileInput = document.getElementById('upload-file');
+      const files = Array.from(fileInput?.files || []);
+      if (!files.length) throw new Error('请选择至少一个文件');
+      const version = String(form.get('version') || '').trim();
+      const edition = String(form.get('edition') || '').trim();
+      const keyVersion = String(form.get('keyVersion') || '1');
+      const progress = document.getElementById('upload-progress');
+      const failures = [];
+      let done = 0;
+      for (const file of files) {
+        if (progress) progress.textContent = `正在上传 ${done + 1}/${files.length}：${file.name}`;
+        const formData = new FormData();
+        formData.append('appId', application.id);
+        if (version) formData.append('version', version);
+        if (edition) formData.append('edition', edition);
+        formData.append('keyVersion', keyVersion);
+        formData.append('file', file);
+        try {
+          const response = await fetch('/api/v1/admin/artifacts/upload', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${sessionStorage.getItem('kmxt.admin.token') || ''}` },
+            body: formData,
+          });
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.error?.message || `HTTP ${response.status}`);
+          }
+          const result = await response.json();
+          if (!result.success) throw new Error(result.error?.message || '未知错误');
+          // 花落/MIT: 服务端不存密文，加密后的 .vmp 以 base64 回传，此处触发浏览器下载。
+          const vmpBase64 = result.data?.vmpBase64;
+          if (vmpBase64) {
+            const binary = atob(vmpBase64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+            const blob = new Blob([bytes], { type: 'application/octet-stream' });
+            const objectUrl = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = objectUrl;
+            anchor.download = result.data?.vmpFilename || `${file.name}.vmp`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(objectUrl);
+          }
+          done += 1;
+        } catch (error) {
+          failures.push(`${file.name}: ${friendlyError(error)}`);
+        }
+      }
+      await renderCurrentView();
+      if (failures.length) {
+        throw new Error(`成功 ${done}/${files.length}，失败：\n${failures.join('\n')}`);
+      }
+      showToast(`已加密并登记 ${done} 个模型为草稿。`);
+    },
+  });
+}
+
 function openGenerateLicenses() {
   const application = store.application;
   if (!application) return;
@@ -768,6 +861,8 @@ document.addEventListener('click', async (event) => {
     openCreateUser();
   } else if (action === 'create-app') {
     openCreateApplication();
+  } else if (action === 'upload-model-artifact') {
+    openUploadModelArtifact();
   } else if (action === 'edit-app') {
     const application = store.value.applications.find((item) => item.id === id);
     if (application) openEditApplication(application);
@@ -791,6 +886,11 @@ document.addEventListener('click', async (event) => {
   } else if (action === 'select-app') {
     store.patch({ selectedAppId: id, licensePage: 1, selectedLicenseIds: [], view: 'licenses' });
     location.hash = 'licenses';
+    renderShell();
+    await renderCurrentView();
+  } else if (action === 'select-app-models') {
+    store.patch({ selectedAppId: id, modelArtifactStatus: '', modelArtifacts: [], view: 'modelArtifacts' });
+    location.hash = 'modelArtifacts';
     renderShell();
     await renderCurrentView();
   } else if (action === 'download-client-config') {
@@ -821,6 +921,145 @@ document.addEventListener('click', async (event) => {
       store.patch({ applications: store.value.applications.map((item) => item.id === id ? updated : item) });
       showToast(nextStatus === 'active' ? '程序已启用。' : '程序已禁用。');
       renderShell();
+      await renderCurrentView();
+    });
+  } else if (action === 'set-model-artifact-status') {
+    const nextStatus = status;
+    const statusCopy = {
+      draft: {
+        title: '退回模型草稿',
+        message: '制品退回草稿后不会签发新的模型租约，已经签发的租约仍会在自身到期前有效。',
+        confirmLabel: '确认退回草稿',
+      },
+      active: {
+        title: '激活模型制品',
+        message: '激活后，持有有效卡密和设备会话的客户端可以申请该制品的短期租约。',
+        confirmLabel: '确认激活',
+      },
+      revoked: {
+        title: '吊销模型制品',
+        message: '吊销会立即撤销该制品已有的活动租约，客户端将无法继续申请新的租约。',
+        confirmLabel: '确认吊销',
+      },
+    }[nextStatus];
+    if (!statusCopy) return;
+    const confirmed = await confirmAction(statusCopy);
+    if (confirmed) await performAction(async () => {
+      await api.patch(`/api/v1/artifacts/${encodeURIComponent(id)}/status`, { status: nextStatus });
+      showToast(nextStatus === 'active' ? '模型制品已激活。' : nextStatus === 'draft' ? '模型制品已退回草稿。' : '模型制品已吊销。');
+      await renderCurrentView();
+    });
+  } else if (action === 'delete-model-artifact') {
+    const confirmed = await confirmAction({ title: '删除模型制品', message: '删除后将清除该制品的加密参数和租约记录，此操作不可恢复。只有草稿和已吊销的制品可以删除。', confirmLabel: '确认删除' });
+    if (confirmed) await performAction(async () => {
+      await api.delete(`/api/v1/artifacts/${encodeURIComponent(id)}`);
+      showToast('模型制品已删除。');
+      await renderCurrentView();
+    });
+  } else if (action === 'copy-model-artifact-id') {
+    await performAction(async () => {
+      const uuid = button.dataset.value || id;
+      const name = button.dataset.name || '';
+      const version = button.dataset.version || '';
+      const label = [name, version && `v${version}`].filter(Boolean).join(' ');
+      const text = label ? `${label}\n${uuid}` : uuid;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const helper = document.createElement('textarea');
+        helper.value = text;
+        document.body.appendChild(helper);
+        helper.select();
+        document.execCommand('copy');
+        helper.remove();
+      }
+      showToast(label ? `已复制「${label}」及其 UUID。` : '制品 UUID 已复制。');
+    });
+  } else if (action === 'bulk-delete-model-artifacts') {
+    const artifactIds = [...new Set(store.value.selectedArtifactIds || [])];
+    if (!artifactIds.length) {
+      showToast('请先选择要删除的制品。', 'error');
+      return;
+    }
+    const confirmed = await confirmAction({ title: '批量删除模型制品', message: `将删除已选 ${artifactIds.length} 个制品，并清除其加密参数与租约记录，此操作不可恢复。只有草稿和已吊销的制品可以删除。`, confirmLabel: '确认批量删除' });
+    if (confirmed) await performAction(async () => {
+      const results = await Promise.allSettled(artifactIds.map((artifactId) => api.delete(`/api/v1/artifacts/${encodeURIComponent(artifactId)}`)));
+      const deletedCount = results.filter((item) => item.status === 'fulfilled').length;
+      const failedCount = results.length - deletedCount;
+      store.patch({ selectedArtifactIds: [] });
+      const message = failedCount
+        ? `已删除 ${deletedCount} 个，${failedCount} 个未删除。`
+        : `已删除 ${deletedCount} 个模型制品。`;
+      showToast(message, failedCount ? 'error' : 'success');
+      await renderCurrentView();
+    });
+  } else if (action === 'bulk-export-model-artifacts') {
+    const selectedSet = new Set(store.value.selectedArtifactIds || []);
+    const chosen = (store.value.modelArtifacts || []).filter((artifact) => selectedSet.has(artifact.id));
+    if (!chosen.length) {
+      showToast('请先选择要导出的制品。', 'error');
+      return;
+    }
+    await performAction(async () => {
+      const exported = {
+        exportedAt: new Date().toISOString(),
+        application: store.application ? { id: store.application.id, name: store.application.name, code: store.application.code } : null,
+        count: chosen.length,
+        artifacts: chosen.map((artifact) => ({
+          uuid: artifact.id,
+          name: artifact.name,
+          version: artifact.version,
+          edition: artifact.edition || null,
+          format: artifact.format,
+          status: artifact.status,
+        })),
+      };
+      const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      link.href = url;
+      link.download = `model-artifacts-${stamp}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast(`已导出 ${chosen.length} 个制品的 UUID 到 JSON 文件。`);
+    });
+  } else if (action === 'bulk-activate-model-artifacts') {
+    const selectedSet = new Set(store.value.selectedArtifactIds || []);
+    const targetIds = (store.value.modelArtifacts || [])
+      .filter((artifact) => selectedSet.has(artifact.id) && artifact.status === 'draft')
+      .map((artifact) => artifact.id);
+    if (!targetIds.length) {
+      showToast('已选制品中没有可启用的草稿制品。', 'error');
+      return;
+    }
+    const confirmed = await confirmAction({ title: '批量启用模型制品', message: `将启用已选中的 ${targetIds.length} 个草稿制品，启用后持有有效卡密和设备会话的客户端可申请其租约。`, confirmLabel: '确认批量启用' });
+    if (confirmed) await performAction(async () => {
+      const results = await Promise.allSettled(targetIds.map((artifactId) => api.patch(`/api/v1/artifacts/${encodeURIComponent(artifactId)}/status`, { status: 'active' })));
+      const okCount = results.filter((item) => item.status === 'fulfilled').length;
+      const failedCount = results.length - okCount;
+      store.patch({ selectedArtifactIds: [] });
+      showToast(failedCount ? `已启用 ${okCount} 个，${failedCount} 个未启用。` : `已启用 ${okCount} 个模型制品。`, failedCount ? 'error' : 'success');
+      await renderCurrentView();
+    });
+  } else if (action === 'bulk-revoke-model-artifacts') {
+    const selectedSet = new Set(store.value.selectedArtifactIds || []);
+    const targetIds = (store.value.modelArtifacts || [])
+      .filter((artifact) => selectedSet.has(artifact.id) && (artifact.status === 'draft' || artifact.status === 'active'))
+      .map((artifact) => artifact.id);
+    if (!targetIds.length) {
+      showToast('已选制品中没有可吊销的草稿或已启用制品。', 'error');
+      return;
+    }
+    const confirmed = await confirmAction({ title: '批量吊销模型制品', message: `将吊销已选中的 ${targetIds.length} 个制品，吊销会立即撤销其活动租约，客户端无法继续申请新租约。`, confirmLabel: '确认批量吊销' });
+    if (confirmed) await performAction(async () => {
+      const results = await Promise.allSettled(targetIds.map((artifactId) => api.patch(`/api/v1/artifacts/${encodeURIComponent(artifactId)}/status`, { status: 'revoked' })));
+      const okCount = results.filter((item) => item.status === 'fulfilled').length;
+      const failedCount = results.length - okCount;
+      store.patch({ selectedArtifactIds: [] });
+      showToast(failedCount ? `已吊销 ${okCount} 个，${failedCount} 个未吊销。` : `已吊销 ${okCount} 个模型制品。`, failedCount ? 'error' : 'success');
       await renderCurrentView();
     });
   } else if (action === 'toggle-license') {
@@ -902,6 +1141,16 @@ document.addEventListener('click', async (event) => {
       showToast(`已解绑 ${result.unboundCount} 台设备。`);
       await showDevices(id);
     });
+  } else if (action === 'disconnect-device') {
+    const confirmed = await confirmAction({ title: '强制设备下线', message: '将立即撤销该设备的全部客户端会话，但保留设备绑定。客户端需要重新激活后才能继续使用。', confirmLabel: '确认下线' });
+    if (confirmed) await performAction(async () => {
+      const result = await api.post(`/api/v1/device-bindings/${encodeURIComponent(id)}/disconnect`, {});
+      showToast(result.disconnectedSessions > 0 ? `设备已下线，撤销 ${result.disconnectedSessions} 个会话。` : '设备当前已离线。');
+      await renderCurrentView();
+    });
+  } else if (action === 'clear-online-device-filters') {
+    store.patch({ onlineDeviceStatus: 'online', onlineDeviceSearch: '', onlineDevicePage: 1 });
+    await renderCurrentView();
   } else if (action === 'license-page-previous' || action === 'license-page-next') {
     store.patch({ licensePage: Math.max(1, store.value.licensePage + (action.endsWith('next') ? 1 : -1)), selectedLicenseIds: [] });
     await renderCurrentView();
@@ -910,6 +1159,9 @@ document.addEventListener('click', async (event) => {
     await renderCurrentView();
   } else if (action === 'log-page-previous' || action === 'log-page-next') {
     store.patch({ logPage: Math.max(1, store.value.logPage + (action.endsWith('next') ? 1 : -1)) });
+    await renderCurrentView();
+  } else if (action === 'online-device-page-previous' || action === 'online-device-page-next') {
+    store.patch({ onlineDevicePage: Math.max(1, store.value.onlineDevicePage + (action.endsWith('next') ? 1 : -1)) });
     await renderCurrentView();
   } else if (action === 'log-mode') {
     store.patch({ logMode: mode, logPage: 1 });
@@ -929,6 +1181,12 @@ document.addEventListener('change', async (event) => {
     });
   } else if (event.target.id === 'license-app-context') {
     store.patch({ selectedAppId: event.target.value || null, licensePage: 1, selectedLicenseIds: [] });
+    await renderCurrentView();
+  } else if (event.target.id === 'model-artifact-app-context') {
+    store.patch({ selectedAppId: event.target.value || null, modelArtifactStatus: '', modelArtifacts: [] });
+    await renderCurrentView();
+  } else if (event.target.id === 'model-artifact-status-filter') {
+    store.patch({ modelArtifactStatus: event.target.value || '' });
     await renderCurrentView();
   } else if (event.target.id === 'license-status-filter') {
     store.patch({ licenseStatus: event.target.value, licensePage: 1, selectedLicenseIds: [] });
@@ -957,6 +1215,26 @@ document.addEventListener('change', async (event) => {
       selectAll.checked = boxes.every((input) => input.checked);
       selectAll.indeterminate = boxes.some((input) => input.checked) && !selectAll.checked;
     }
+  } else if (event.target.id === 'model-artifact-select-all') {
+    const ids = [...document.querySelectorAll('[data-artifact-select]')].map((input) => input.value);
+    store.patch({ selectedArtifactIds: event.target.checked ? ids : [] });
+    await renderCurrentView();
+  } else if (event.target.matches('[data-artifact-select]')) {
+    const selected = new Set(store.value.selectedArtifactIds || []);
+    event.target.checked ? selected.add(event.target.value) : selected.delete(event.target.value);
+    store.patch({ selectedArtifactIds: [...selected] });
+    // 导出/启用/吊销/删除四个按钮各按状态计数，重渲染以同步全部按钮与全选态
+    await renderCurrentView();
+  } else if (event.target.id === 'online-device-app-context') {
+    store.patch({ selectedAppId: event.target.value || null, onlineDevicePage: 1 });
+    await renderCurrentView();
+  } else if (event.target.id === 'online-device-status-filter') {
+    store.patch({ onlineDeviceStatus: event.target.value, onlineDevicePage: 1 });
+    await renderCurrentView();
+  } else if (event.target.id === 'online-device-limit') {
+    const limit = Number.parseInt(event.target.value || '20', 10);
+    store.patch({ onlineDeviceLimit: [20, 50, 100].includes(limit) ? limit : 20, onlineDevicePage: 1 });
+    await renderCurrentView();
   } else if (event.target.id === 'product-app-context') {
     store.patch({ selectedAppId: event.target.value || null, products: [] });
     await renderCurrentView();
@@ -971,6 +1249,11 @@ document.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = new FormData(event.target);
     store.patch({ licenseSearch: String(form.get('key') || '').trim(), licensePage: 1, selectedLicenseIds: [] });
+    await renderCurrentView();
+  } else if (event.target.id === 'online-device-search-form') {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    store.patch({ onlineDeviceSearch: String(form.get('search') || '').trim(), onlineDevicePage: 1 });
     await renderCurrentView();
   } else if (event.target.id === 'order-filter-form') {
     event.preventDefault();

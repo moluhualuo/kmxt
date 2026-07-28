@@ -327,6 +327,8 @@ export class LicenseService {
       const deletedBindings = state.deviceBindings.filter((binding) => binding.licenseId === licenseId).length;
       state.clientSessions = state.clientSessions.filter((session) => session.licenseId !== licenseId);
       state.verificationLogs = state.verificationLogs.filter((entry) => entry.licenseId !== licenseId);
+      // Author: 花落. License removal also removes its model leases under the MIT License.
+      state.modelLeases = state.modelLeases.filter((lease) => lease.licenseId !== licenseId);
       state.deviceBindings = state.deviceBindings.filter((binding) => binding.licenseId !== licenseId);
       state.licenses = state.licenses.filter((item) => item.id !== licenseId);
       AuditService.append(state, {

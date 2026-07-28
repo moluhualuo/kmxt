@@ -64,6 +64,16 @@ test('license key recovery migration advances metadata without rewriting payload
   assert.match(sql, /JSON payload/i);
 });
 
+test('model delivery migration stores metadata and advances schema without model bytes', async () => {
+  const sql = await readFile(new URL('../migrations/004_model_delivery.sql', import.meta.url), 'utf8');
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS model_artifacts/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS model_leases/);
+  assert.match(sql, /cipher_sha256 CHAR\(64\)/);
+  assert.match(sql, /client_key_fingerprint CHAR\(64\)/);
+  assert.match(sql, /schema_version = 5/);
+  assert.doesNotMatch(sql, /BLOB|LONGBLOB/i);
+});
+
 test('deployment templates keep credentials in read-only secret files and recovery is guarded', async () => {
   const [compose, productionEnv, backup, restore] = await Promise.all([
     readFile(new URL('../deploy/compose.yaml', import.meta.url), 'utf8'),
@@ -71,7 +81,7 @@ test('deployment templates keep credentials in read-only secret files and recove
     readFile(new URL('../deploy/scripts/backup.sh', import.meta.url), 'utf8'),
     readFile(new URL('../deploy/scripts/restore.sh', import.meta.url), 'utf8'),
   ]);
-  assert.match(compose, /kmxt_mysql_password:\s*\n\s*file: \.\/secrets\/mysql_password/);
+  assert.match(compose, /mysql_local_password:\s*\n\s*file: \.\/secrets\/mysql_local_password/);
   assert.match(compose, /kmxt_redis_password:\s*\n\s*file: \.\/secrets\/redis_password/);
   assert.match(productionEnv, /^KMXT_MYSQL_PASSWORD_FILE=\/run\/secrets\/kmxt_mysql_password$/m);
   assert.match(productionEnv, /^KMXT_REDIS_PASSWORD_FILE=\/run\/secrets\/kmxt_redis_password$/m);

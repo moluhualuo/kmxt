@@ -43,17 +43,29 @@ const verified = await client.verify(await readSecurely());
 if (verified.licensed !== true) {
   throw new Error('Authorization denied');
 }
+
+// 用户选择“解绑本机”时，SDK 会验证服务端签名的解绑确认。
+const unbound = await client.unbind(await readSecurely());
+if (unbound.unbound === true) {
+  await deleteSecurelyStoredSession();
+}
 ```
 
 SDK 自动完成：
 
 - 创建毫秒时间戳和随机 Nonce。
+- 远程 `baseUrl` 必须使用 HTTPS；仅 `localhost`、`127.0.0.1` 和 `[::1]` 允许本地 HTTP 调试。
+- 为请求设置 `redirect: error`，并拒绝跟随重定向的响应。
 - 检查 HTTP 和统一错误响应。
 - 检查签名算法、`keyId` 和 `appId`。
 - 用固定公钥验证 Ed25519 签名。
+- 验签后严格比较已签名 `requestNonce` 与当前请求 Nonce。
 - 检查 `licensed === true` 和卡密到期时间。
+- 主动解绑时检查签名、固定程序、`unbound === true` 和 `DEVICE_UNBOUND`。
 
 网络错误、签名错误、响应解析错误均以拒绝授权处理。不要在异常时默认放行。
+Node SDK 当前只覆盖卡密激活、心跳和主动解绑；模型租约仍由 Android app-specific SDK 提供，
+不能把普通 Node 客户端收到的模型元数据当作 DEK 或授权凭据。
 
 ## 设备标识
 
@@ -71,9 +83,13 @@ SDK 自动完成：
   -> 启用授权功能
   -> 按 heartbeatAfterSeconds 调用 /client/verify
   -> 每次验证签名和到期时间
+  -> 用户主动解绑时调用 /client/unbind
+  -> 验证签名解绑确认后删除本地 sessionToken
 ```
 
-每次请求必须使用新的 Nonce。客户端时钟偏差超过服务端窗口时会收到 `STALE_REQUEST`，此时应提示用户同步系统时间，不能绕过验证。
+主动解绑必须使用当前会话和同一设备 ID，不能只在本地删除令牌。服务端成功处理后会将设备绑定标记为 `revoked`、撤销该设备全部会话并释放设备名额；下次使用需要重新输入卡密激活。
+
+每次请求必须使用新的 Nonce，并只接受 `requestNonce` 与本次请求完全一致的已签名响应。即使旧信封签名有效，也不能用于新的激活、心跳或解绑请求。客户端时钟偏差超过服务端窗口时会收到 `STALE_REQUEST`，此时应提示用户同步系统时间，不能绕过验证。
 
 ## 离线策略
 

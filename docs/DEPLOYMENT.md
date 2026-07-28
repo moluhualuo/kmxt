@@ -12,7 +12,7 @@ Internet -> Nginx :443 -> 127.0.0.1:8082 -> KMXT app 172.28.52.10
 
 仓库的 `deploy/compose.yaml` 使用固定 `172.28.52.0/24` 网络；应用只发布宿主机回环端口。Node 只信任网关 `172.28.52.1/32` 传入的 `X-Forwarded-For`，Nginx 会覆盖而不是追加客户端提供的头。Compose 内 Redis 位于 `local-redis` profile，仅用于没有独立 Redis 时的离线替代；当前生产使用独立 Redis Cloud，不能指向 `new-api`。
 
-外部 Redis 的持久化、备份和可用性由 Redis Cloud 套餐负责，上线前需确认开启持久化并满足 Nonce 保留窗口；若切换到 `local-redis` profile，则镜像已启用 AOF `appendfsync everysec`，且 Redis 不发布宿主机端口。
+外部 Redis 的持久化、备份和可用性由 Redis Cloud 套餐负责，上线前需确认开启持久化，并允许 Nonce 键至少保留 `2 * KMXT_CLOCK_SKEW_SECONDS + 1` 秒；若切换到 `local-redis` profile，则镜像已启用 AOF `appendfsync everysec`，且 Redis 不发布宿主机端口。
 
 ## DNS 与目录
 
@@ -49,6 +49,17 @@ curl --fail http://127.0.0.1:8082/health
 预检校验 secret、Compose、镜像构建、MySQL TLS 连接、SQL migration、Redis `PING` 和状态读取。`deploy.sh` 再执行 migration、创建全新平台管理员并启动应用。
 由于 app 服务使用固定容器 IP，服务已运行后不要再用 `docker compose run app ...` 做状态查询，否则临时容器会与运行中 app 的固定 IP 冲突；上线后的状态检查使用 `docker compose exec -T app node cli/kmxt.js status`。
 
+## ScreenYolo 兼容性门禁
+
+新版本 ScreenYolo AAR 要求 `activate`、`verify` 和 `unbind` 的成功签名 payload 都回显本次请求的 `requestNonce`。必须先把包含该协议的 KMXT 服务部署到生产，再分发 APK；旧服务返回的成功 envelope 会被 native validator fail-closed 拒绝。部署后在服务器和外部入口分别检查：
+
+```bash
+curl --fail https://kmxt.moluhualuo.top/health
+curl --fail https://kmxt.moluhualuo.top/ready
+```
+
+然后用受控测试卡密完成一次激活、心跳和解绑，确认三份成功 payload 的 `requestNonce` 与请求 nonce 完全一致，并保存不含卡密/令牌的审计结果。服务未通过该门禁时，禁止把 ScreenYolo 的新 Release APK 标记为可分发。作者：花落 / MIT。
+
 ## Nginx 与证书
 
 先以只有 80 端口 ACME location 的临时站点启动 Nginx，再签发：
@@ -64,6 +75,30 @@ certbot renew --dry-run
 站点将 HTTP 跳转 HTTPS，并对 API、后台和店铺统一发送 `no-store`。
 
 ## 业务验收
+
+## 模型交付部署
+
+新增配置：
+
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `KMXT_MODEL_LEASE_TTL_SECONDS` | `600` | 正常模型租约秒数，最小 60。 |
+| `KMXT_MODEL_LEASE_MAX_TTL_SECONDS` | `900` | 服务端允许的租约上限，必须不小于正常 TTL。 |
+| `KMXT_MODEL_ARTIFACT_MAX_BYTES` | `2147483648` | 登记 artifact 的最大密文字节数。 |
+
+上线顺序为：备份 MySQL/根密钥 -> 执行 `004_model_delivery.sql` -> 部署
+0.7.0 服务 -> 选择发布路径 -> 校验 `.vmp` SHA-256 后再激活。大型模型推荐在受控
+发布机运行 `cli/publish-model-artifact.js`，本地加密后仅登记元数据与 DEK；密文可随
+APK/AAB 分发，或上传到私有写入、HTTPS 只读的对象存储/CDN。管理后台也可逐个上传
+明文模型，由 Node 在内存中加密、登记 draft，并把 `.vmp` 作为 Base64 响应交给浏览器下载。
+
+生产必须使用 MySQL + Redis；Redis URL 应使用 `rediss://` 或处于受保护私网，
+因为 Nonce/限流状态决定租约重放边界。使用管理后台上传时，Nginx
+`client_max_body_size`、代理超时和并发上限必须按可用内存设置；该路径会同时持有明文、
+密文与 Base64 响应，生产大文件应改用本地发布 CLI。KMXT 不持久化模型字节，也不把
+CDN 写凭据放入数据库。对象 URL 若包含短时查询签名，其寿命不得短于模型租约，且日志不得
+记录完整查询串。根密钥应迁入 secret manager/KMS；丢失根密钥会使历史 artifact
+DEK 无法解密，轮换必须采用版本化双读迁移。
 
 1. 平台管理员登录并创建商户、商户管理员和程序。
 2. 程序页下载 Android JSON/头文件，确认 base URL、appId、keyId 与公钥。

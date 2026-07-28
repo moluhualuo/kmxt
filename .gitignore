@@ -1,4 +1,5 @@
 data/*.json
+data/*.json.*
 data/*.key
 data/*.tmp
 data/*.bak
