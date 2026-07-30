@@ -59,7 +59,7 @@ D:\ck\gardle\gradle-8.14.2\bin\gradle.bat --no-daemon --console=plain `
 当前 release AAR：
 
 - 路径：`sdk/android/kmxt-sdk/build/outputs/aar/kmxt-sdk-release.aar`
-- SHA-256：`0C12CD230B42386BCE7DD71FBF0323BBEBBE1936D9268ED6012993103279AFD3`
+- SHA-256：`c3bb65e68f05ffa038e14901918d3b2581e52a11b59aba75269d43d2e0b828bc`
 - Native：仅包含 `jni/arm64-v8a/libkmxt_jni.so`
 - ELF：`ELF64`、`DYN`、`AArch64`
 - OpenSSL 静态库：`sdk/android/prebuilt/openssl/3.6.3/arm64-v8a/lib/libcrypto.a`，SHA-256 `551EC903C9AB7DF25468D368009F78C2BEE5742A93375DD5806F5F47ED62EDD1`
@@ -94,17 +94,18 @@ D:\ck\gardle\gradle-8.14.2\bin\gradle.bat --no-daemon --console=plain :demo-app:
 
 ## 配置与接口
 
-从后台“程序”页下载 JSON 和 `.hpp`，或调用 `GET /api/v1/apps/:appId/client-config`。ScreenYolo app-specific AAR 的 Kotlin 配置只内置 `baseUrl`、`appId` 和协议版本；`keyId`、Ed25519 公钥和 applicationId 映射编译进 native trust store，不内置卡密或私钥。
+从后台”程序”页下载 JSON 和 `.hpp`，或调用 `GET /api/v1/apps/:appId/client-config`。ScreenYolo app-specific AAR 的 Kotlin 配置只内置 `baseUrl`、`appId` 和协议版本；`keyId`、Ed25519 公钥和 applicationId 映射编译进 native trust store，不内置卡密或私钥。
 
 ```kotlin
 val client = KmxtLicenseClient(context, KmxtConfig(
-    baseUrl = "https://kmxt.moluhualuo.top",
+    baseUrl = “https://kmxt.moluhualuo.top”,
     appId = BuildConfig.KMXT_APP_ID,
 ))
 
 val activated = client.activate(licenseKey)
 val verified = client.verify()
 val unbound = client.unbind()
+val notices = client.fetchNotices()
 val lease = client.requestModelLease(artifactId)
 try {
     // Read the local .vmp packed in APK assets, verify cipherSha256/size, then let the
@@ -119,6 +120,52 @@ client.clearSession()
 `activate`、`verify` 和 `unbind` 均不在主线程执行网络。每次调用独立保存本次请求 Nonce，并在 Ed25519 验签后严格比较签名载荷的 `requestNonce`；旧响应重放、字段缺失或错 nonce 均失败关闭。`activate` 和 `verify` 只有在 HTTPS、JSON、keyId、Ed25519、appId、requestNonce 与到期时间全部通过时才返回授权；`unbind` 只有在签名、固定程序、requestNonce、`unbound=true` 和 `DEVICE_UNBOUND` 全部通过后才清除 Keystore 加密会话。网络、TLS、解析或签名失败均不会误报解绑成功。会话令牌由 Android Keystore 中不可导出的 AES-GCM 密钥加密后保存。
 
 `unbind()` 返回 `DeviceUnbindStatus`，包含 `bindingId` 和服务端实际撤销的 `sessionsRevoked`。若服务端返回 `SESSION_EXPIRED` 或 `DEVICE_MISMATCH`，SDK 会清除已经不可继续使用的本地会话；其他网络或签名错误保留会话，调用方可在网络恢复后重试。
+
+### 公告与版本策略
+
+`activate` 和 `verify` 的授权响应自动包含 `clientPolicy` 和 `announcements`：
+
+- `clientPolicy.minVersionCode`：硬性最低版本要求，低于此版本应禁用激活按钮
+- `clientPolicy.latestVersionCode/latestVersionName/releaseNotes`：建议更新信息
+- `announcements`：当前有效的系统公告列表（最多 3 条，按序号倒序）
+
+未激活用户可通过 `fetchNotices(appId)` 从独立公开端点获取相同内容：
+
+```kotlin
+val notices = client.fetchNotices(appId)
+val policy = notices.clientPolicy
+val announcements = notices.announcements
+
+// 检查版本策略
+if (policy.minVersionCode != null && BuildConfig.VERSION_CODE < policy.minVersionCode) {
+    // 禁用激活按钮，提示强制更新
+    showForceUpdateDialog(policy.latestVersionName, policy.releaseNotes)
+    return
+}
+
+// 渲染公告
+for (announcement in announcements) {
+    addAnnouncementCard(announcement.severity, announcement.title, announcement.body)
+}
+```
+
+**客户端验证要求**：
+
+1. 验证 Ed25519 签名和固定 `keyId`
+2. 验证 `payload.appId` 与当前程序一致
+3. 验证 `payload.type === 'client_notice'`（仅 `fetchNotices`）
+4. 检查 `issuedAt` 时间戳新鲜度（容忍 5 分钟内）
+5. **防回滚**：SDK 自动比较 `payload.sequence` 与 SharedPreferences 中的 `lastSeenSequence`
+   - 如果 `sequence < lastSeenSequence`，抛出 `LicenseException.NOTICE_ROLLBACK`
+   - 如果 `sequence >= lastSeenSequence`，更新持久化记录
+6. 检查版本策略并禁用激活（当 `versionCode < minVersionCode` 时）
+7. 渲染公告时使用纯文本 `TextView`，按 `severity` 分配颜色（`critical` 红色、`warning` 橙色、`info` 蓝色）
+
+**容错处理**：
+
+- `fetchNotices()` 签名验证失败或服务不可用（503）时抛出异常
+- 调用方应 `catch` 异常并跳过公告显示，不阻塞激活流程
+- `activate` 和 `verify` 响应中的公告解析失败不影响授权结果（容错设计）
 
 `KmxtLifecycleVerifier` 可注册到进程或 Activity 生命周期：每次前台恢复立即 `verify()`，成功后按签名响应中的 `heartbeatAfterSeconds` 循环；失败即停止并通过监听器返回结构化错误。SDK 不实现离线宽限。
 

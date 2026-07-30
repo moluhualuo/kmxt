@@ -77,6 +77,62 @@ JSON 开发模式的 Nonce 与速率限制状态位于进程内存；MySQL 生�
 - 人工发卡和订单状态更新在同一数据事务完成，并对重复请求保持幂等。
 - 当前没有支付接口，服务不会把“已提交”视为“已付款”。商户应按自己的线下规则审核订单。
 
+## 公告与版本策略
+
+公告系统通过两条通道向客户端下发系统通知和版本更新要求：
+
+- **通道 A**（已授权客户端）：`activate` 和 `verify` 签名载荷自动包含 `clientPolicy` 和 `announcements`，继承现有反重放保护
+- **通道 B**（未激活客户端）：独立公开端点 `/api/v1/client/apps/:appId/notices` 返回程序私钥签名的通知信封
+
+两条通道的载荷都使用程序 Ed25519 私钥签名，客户端必须验证签名、固定 `keyId` 和 `appId` 后使用。
+
+### 威胁模型
+
+公告内容会被下发到全部客户端（包括未激活用户），因此：
+
+- **输入验证**：`assertPlainText` 拒绝 `<>`、JavaScript URI、`data:` 和控制字符，防止注入攻击
+- **权限控制**：只有 `platform_admin` 和 `merchant_admin` 可以创建/发布公告；`operator` 只读
+- **签名保护**：每个公告经程序私钥签名后下发，客户端伪造或中间人篡改会导致验签失败
+- **防回滚**：使用单调递增序号 `application.announcementSequence`，删除公告不回退计数器
+- **时间窗口**：`startsAt` 和 `endsAt` 控制公告有效期，服务端只下发当前有效的最新 3 条
+
+### 客户端验证要求
+
+客户端必须按以下顺序处理通知信封：
+
+1. 验证 Ed25519 签名和固定 `keyId`
+2. 验证 `payload.appId` 与当前程序一致
+3. 验证 `payload.type === 'client_notice'`
+4. 检查 `issuedAt` 时间戳新鲜度（建议容忍 5 分钟内）
+5. **防回滚**：比较 `payload.sequence` 与本地持久化的最大已见序号
+   - 如果 `sequence < lastSeenSequence`，拒绝使用（可能是降级攻击）
+   - 如果 `sequence >= lastSeenSequence`，更新 SharedPreferences 中的记录
+6. 检查 `clientPolicy.minVersionCode`：
+   - 当前 `versionCode < minVersionCode` 时禁用激活按钮并提示强制更新
+7. 渲染 `announcements` 时使用纯文本 TextView，禁止 WebView 或 HTML 解析
+
+### 通道 B 限流
+
+`/api/v1/client/apps/:appId/notices` 是公开端点，受限速保护（30 次/60 秒每 IP）。攻击者无法通过高频请求：
+
+- 触发签名性能问题（Ed25519 签名可缓存，按程序和公告版本复用）
+- 绕过版本策略（签名载荷绑定 `minVersionCode`，客户端必须验签）
+- 回滚公告序号（客户端持久化 `lastSeenSequence`，拒绝降级）
+
+### 配置缺失容错
+
+服务端缺少 `rootSecret` 或程序签名密钥时，`publicNotice()` 返回 `503 NOTICE_UNAVAILABLE`。客户端应容错处理：
+
+- 签名验证失败或服务不可用时，不阻塞激活流程
+- 仅跳过公告显示，记录错误日志供调试
+- 通道 A（授权响应）和通道 B（独立端点）相互独立，一个失败不影响另一个
+
+### 已知限制
+
+- 当前不支持公告内富文本或链接（纯文本设计，防止注入）
+- 删除公告后序号跳跃（防回滚设计，不可避免）
+- 公开端点可被未付费用户访问（设计如此，用于展示更新要求和系统通知）
+
 ## HTTP 安全
 
 - 请求体默认限制为 1 MiB。

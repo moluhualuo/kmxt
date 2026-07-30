@@ -8,6 +8,9 @@ const LOGIN_LIMIT = { limit: 10, windowSeconds: 60 };
 const ADMIN_LIMIT = { limit: 180, windowSeconds: 60 };
 const CLIENT_LIMIT = { limit: 300, windowSeconds: 60 };
 const MODEL_LEASE_LIMIT = { limit: 30, windowSeconds: 60 };
+// 花落 / MIT：公开公告端点独立限流，不复用 CLIENT_LIMIT(300/min)。
+// 公告是可被匿名轮询的只读通道，让它挤占验证配额等于给攻击者一个廉价的拒绝服务入口。
+const NOTICE_LIMIT = { limit: 30, windowSeconds: 60 };
 const STORE_READ_LIMIT = { limit: 120, windowSeconds: 60 };
 const STORE_ORDER_LIMIT = { limit: 10, windowSeconds: 60 };
 const STORE_QUERY_LIMIT = { limit: 30, windowSeconds: 60 };
@@ -148,6 +151,46 @@ export function registerRoutes(router, services) {
     roles: OWNER_ROLES,
     rateLimit: ADMIN_LIMIT,
   }, async ({ user, params }) => services.modelDelivery.delete(user, params.artifactId));
+
+  // 花落 / MIT：公告管理。只读对三种管理角色开放，写操作限 owner（与模型制品一致）。
+  // 公告正文会被程序私钥签名后下发到全部客户端，因此发布权不下放给 operator。
+  router.add('GET', '/api/v1/apps/:appId/announcements', {
+    auth: true,
+    roles: ADMIN_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params }) => services.announcements.list(user, params.appId));
+  router.add('POST', '/api/v1/apps/:appId/announcements', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params, body }) => response(201, await services.announcements.create(
+    user,
+    params.appId,
+    requireObject(body),
+  )));
+  router.add('PATCH', '/api/v1/announcements/:announcementId', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params, body }) => services.announcements.update(
+    user,
+    params.announcementId,
+    requireObject(body),
+  ));
+  router.add('PATCH', '/api/v1/announcements/:announcementId/status', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params, body }) => services.announcements.setStatus(
+    user,
+    params.announcementId,
+    requireObject(body).status,
+  ));
+  router.add('DELETE', '/api/v1/announcements/:announcementId', {
+    auth: true,
+    roles: OWNER_ROLES,
+    rateLimit: ADMIN_LIMIT,
+  }, async ({ user, params }) => services.announcements.delete(user, params.announcementId));
 
   router.add('GET', '/api/v1/apps/:appId/products', {
     auth: true,
@@ -316,6 +359,11 @@ export function registerRoutes(router, services) {
 
   router.add('GET', '/api/v1/client/apps/:appId/config', { rateLimit: CLIENT_LIMIT }, async ({ params }) => {
     return services.applications.getPublicConfig(params.appId);
+  });
+  // 花落 / MIT：未激活客户端的公开公告与版本策略。返回程序 Ed25519 签名信封，
+  // 客户端必须验签后才展示。独立限流而不复用 CLIENT_LIMIT，避免公告轮询挤占验证配额。
+  router.add('GET', '/api/v1/client/apps/:appId/notices', { rateLimit: NOTICE_LIMIT }, async ({ params }) => {
+    return services.announcements.publicNotice(params.appId);
   });
   router.add('POST', '/api/v1/client/activate', { rateLimit: CLIENT_LIMIT }, async ({ body, clientIp }) => {
     return services.verification.activate({ ...requireObject(body), clientIp });

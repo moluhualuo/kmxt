@@ -12,6 +12,8 @@ function initialState() {
     modelArtifacts: [],
     modelArtifactStatus: '',
     selectedArtifactIds: [],
+    // 花落 / MIT：当前程序的公告列表，供编辑动作按 id 回查，避免再打一次接口。
+    announcements: [],
     licensePage: 1,
     licenseLimit: 20,
     licenseStatus: '',

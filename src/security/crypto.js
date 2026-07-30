@@ -142,15 +142,30 @@ export function generateSigningKeyPair() {
   };
 }
 
-export function canonicalJson(value) {
+// Author: 花落. MIT License.
+// 失败关闭：`undefined` 会让 JSON.stringify 产出裸 undefined，即非法 JSON。
+// 客户端 native 用 nlohmann json::parse 解析规范化载荷，遇到它会抛异常，
+// 结果是全体客户端验签失败。因此在签名前就在服务端暴露该缺陷，而不是下发出去。
+// 载荷中的可选字段必须显式归一为 null。
+function assertSerializable(value, path) {
+  if (value === undefined) {
+    throw new Error(`Cannot canonicalize undefined at ${path}; use null for optional signed fields.`);
+  }
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    throw new Error(`Cannot canonicalize non-finite number at ${path}.`);
+  }
+}
+
+export function canonicalJson(value, path = '$') {
+  assertSerializable(value, path);
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+    return `[${value.map((item, index) => canonicalJson(item, `${path}[${index}]`)).join(',')}]`;
   }
   const keys = Object.keys(value).sort();
-  return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], `${path}.${key}`)}`).join(',')}}`;
 }
 
 export function createSignedEnvelope(payload, privateKey, keyId) {

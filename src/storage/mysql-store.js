@@ -29,6 +29,7 @@ const TABLES = [
   ['verificationLogs', 'verification_logs'],
   ['modelArtifacts', 'model_artifacts'],
   ['modelLeases', 'model_leases'],
+  ['announcements', 'announcements'],
 ];
 
 const COLUMN_VALUES = {
@@ -65,6 +66,16 @@ const COLUMN_VALUES = {
     client_key_fingerprint: item.clientKeyFingerprint,
     status: item.status,
     expires_at: item.expiresAt,
+    created_at: item.createdAt,
+  }),
+  announcements: (item) => ({
+    merchant_id: item.merchantId,
+    app_id: item.appId,
+    status: item.status,
+    severity: item.severity,
+    sequence: item.sequence,
+    starts_at: item.startsAt,
+    ends_at: item.endsAt,
     created_at: item.createdAt,
   }),
 };

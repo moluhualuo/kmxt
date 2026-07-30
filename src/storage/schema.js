@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 // Author: 花落. Distributed under the MIT License.
 export function createInitialState(now = new Date().toISOString()) {
@@ -22,6 +22,7 @@ export function createInitialState(now = new Date().toISOString()) {
     verificationLogs: [],
     modelArtifacts: [],
     modelLeases: [],
+    announcements: [],
   };
 }
 
@@ -45,6 +46,7 @@ export function assertStateShape(state) {
     'verificationLogs',
     'modelArtifacts',
     'modelLeases',
+    'announcements',
   ];
   for (const collection of collections) {
     if (!Array.isArray(state[collection])) {
@@ -76,6 +78,12 @@ export function upgradeState(state) {
     state.modelArtifacts = [];
     state.modelLeases = [];
     state.schemaVersion = 5;
+    changed = true;
+  }
+  if (state?.schemaVersion === 5) {
+    // Author: 花落. v6 adds signed client announcements; MIT License.
+    state.announcements = [];
+    state.schemaVersion = 6;
     changed = true;
   }
   return { state, changed };

@@ -1189,6 +1189,203 @@ dialog::backdrop {
   }
 }
 
+/* 
+   刻意复用既有 CSS 变量而不引入新配色，保证与后台其余页面在同一套设计令牌下。
+   公告正文来自服务端纯文本（服务端已拒收标记与控制字符），此处用 pre-wrap 保留
+   换行分段，绝不做任何 HTML 解析。 */
+.ios-card-list {
+  display: grid;
+  gap: 14px;
+}
+
+.ios-card {
+  position: relative;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(23, 32, 27, 0.04), 0 8px 24px rgba(23, 32, 27, 0.06);
+  overflow: hidden;
+}
+
+/* 左侧 4px 强调条按严重级别着色，是卡片唯一的语义化色彩。 */
+.ios-card::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 4px;
+  background: var(--border-strong);
+  content: "";
+}
+
+.ios-card.severity-info::before {
+  background: var(--info);
+}
+
+.ios-card.severity-warning::before {
+  background: var(--warning);
+}
+
+.ios-card.severity-critical::before {
+  background: var(--danger);
+}
+
+.ios-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ios-card-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.ios-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ios-chip.info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.ios-chip.warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.ios-chip.critical {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.ios-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ios-status::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-strong);
+  content: "";
+}
+
+.ios-status.live {
+  color: var(--primary);
+}
+
+.ios-status.live::before {
+  background: var(--primary);
+}
+
+.ios-card-body {
+  margin: 10px 0 0;
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ios-card-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.ios-meta {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.ios-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* iOS 风格的胶囊按钮：无边框、浅底、按压时轻微内缩。 */
+.ios-action {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 650;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.ios-action:hover {
+  background: color-mix(in srgb, var(--surface-strong) 70%, var(--border-strong));
+}
+
+.ios-action:active {
+  transform: scale(0.97);
+}
+
+.ios-action.danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.ios-action.danger:hover {
+  background: color-mix(in srgb, var(--danger-soft) 70%, var(--danger));
+  color: var(--surface);
+}
+
+.ios-hint {
+  margin: 0 0 14px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.ios-hint.warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1197,5 +1394,178 @@ dialog::backdrop {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* 公告列表 iOS 风格卡片 - 作者：花落｜MIT */
+.announcement-list {
+  display: grid;
+  gap: 16px;
+  padding: 0;
+}
+
+.announcement-card {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  border-left: 4px solid #E7E1D7;
+  transition: box-shadow 0.2s ease;
+}
+
+.announcement-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.announcement-card.severity-info {
+  border-left-color: #5C9EE8;
+}
+
+.announcement-card.severity-warning {
+  border-left-color: #F5A623;
+}
+
+.announcement-card.severity-critical {
+  border-left-color: #C4612F;
+}
+
+.announcement-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.announcement-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.announcement-sequence {
+  font-size: 13px;
+  font-weight: 600;
+  color: #8E8E93;
+  font-family: 'SF Mono', 'Menlo', monospace;
+}
+
+.announcement-severity {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #F2F2F7;
+  color: #1F2421;
+}
+
+.announcement-severity.info {
+  background: #E3F2FD;
+  color: #1976D2;
+}
+
+.announcement-severity.warning {
+  background: #FFF3E0;
+  color: #E65100;
+}
+
+.announcement-severity.critical {
+  background: #F2E3D6;
+  color: #C4612F;
+}
+
+.announcement-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.announcement-status.draft {
+  background: #F2F2F7;
+  color: #8E8E93;
+}
+
+.announcement-status.active {
+  background: #E8F5E9;
+  color: #2E7D32;
+}
+
+.announcement-status.inactive {
+  background: #FFEBEE;
+  color: #C62828;
+}
+
+.announcement-status svg {
+  width: 14px;
+  height: 14px;
+}
+
+.announcement-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.announcement-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: #1F2421;
+  margin: 0 0 8px 0;
+  line-height: 1.4;
+}
+
+.announcement-body {
+  font-size: 15px;
+  color: #5C635D;
+  line-height: 1.5;
+  margin: 0 0 12px 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.announcement-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 13px;
+  color: #8E8E93;
+  padding-top: 8px;
+  border-top: 1px solid #F2F2F7;
+}
+
+.announcement-footer span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.announcement-footer svg {
+  width: 14px;
+  height: 14px;
+  opacity: 0.7;
+}
+
+.announcement-publish-row {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #F2F2F7;
+}
+
+@media (max-width: 768px) {
+  .announcement-card {
+    padding: 12px;
+  }
+
+  .announcement-title {
+    font-size: 16px;
+  }
+
+  .announcement-body {
+    font-size: 14px;
   }
 }

@@ -40,4 +40,10 @@ std::string validate_model_lease_envelope(const std::string& envelope_json,
     const std::string& public_key_pem, const std::string& expected_artifact_id,
     const std::string& expected_request_nonce, const std::string& client_public_key,
     std::int64_t now_millis);
+// 花落 / MIT：公开公告信封校验。无请求 nonce，靠 issuedAt 新鲜度与
+// min_accepted_sequence 防回滚收敛重放；不参与任何授权决策。
+std::string validate_notice_envelope(const std::string& envelope_json,
+    const std::string& expected_app_id, const std::string& expected_key_id,
+    const std::string& public_key_pem, std::int64_t now_millis,
+    std::int64_t min_accepted_sequence);
 }

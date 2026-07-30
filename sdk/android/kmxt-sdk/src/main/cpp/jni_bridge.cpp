@@ -119,6 +119,18 @@ jbyteArray native_decrypt_model_lease(JNIEnv* env, jobject,
     return env->ExceptionCheck() ? nullptr : result;
 }
 
+// 花落 / MIT：通道 B 公告校验。min_accepted_sequence 由 Kotlin 侧传入持久化水位；
+// 负值一律归零，避免上层传入 -1 之类的哨兵值意外关闭防回滚检查。
+jstring native_validate_notice(JNIEnv* env, jobject, jstring envelope, jlong min_sequence) {
+    try {
+        return as_jstring(env, kmxt::android::validate_notice(
+            from_jstring(env, envelope),
+            min_sequence > 0 ? static_cast<std::int64_t>(min_sequence) : 0));
+    } catch (...) {
+        return invalid_response(env);
+    }
+}
+
 void native_release_model_lease(JNIEnv*, jobject, jlong handle) {
     if (handle > 0) kmxt::android::release_model_lease(static_cast<std::uint64_t>(handle));
 }
@@ -153,6 +165,8 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
             reinterpret_cast<void*>(native_validate_unbind)},
         {"validateModelLeaseEnvelope", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
             reinterpret_cast<void*>(native_validate_model_lease)},
+        {"validateNoticeEnvelope", "(Ljava/lang/String;J)Ljava/lang/String;",
+            reinterpret_cast<void*>(native_validate_notice)},
         {"decryptModelLease", "(J[B)[B", reinterpret_cast<void*>(native_decrypt_model_lease)},
         {"releaseModelLease", "(J)V", reinterpret_cast<void*>(native_release_model_lease)},
         {"clearAuthorization", "()V", reinterpret_cast<void*>(native_clear_authorization)},

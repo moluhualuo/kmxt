@@ -15,7 +15,11 @@ import {
   Roles,
 } from './access-control.js';
 import { AuditService } from './audit-service.js';
-import { normalizeApplicationBinding } from './client-integrity.js';
+import {
+  assertVersionPolicyConsistent,
+  normalizeApplicationBinding,
+  normalizeClientRelease,
+} from './client-integrity.js';
 import { presentApplication } from './presenters.js';
 
 const APP_CODE_PATTERN = /^[A-Z0-9][A-Z0-9_-]{1,31}$/;
@@ -43,6 +47,21 @@ function readSettings(input, defaults = {}) {
       { min: 60, max: 604800 },
     ),
   };
+}
+
+// 花落 / MIT：绑定约束与版本发布策略的写入逻辑。MySQL 仓储与 JSON 事务两条路径共用，
+// 避免两边逻辑漂移。自锁校验必须基于「已有值 + 本次修改」的最终值，否则单独 PATCH
+// minVersionCode 时会绕过检查，把全部客户端锁死在没有升级目标的状态。
+function applyBindingAndRelease(current, input) {
+  const binding = normalizeApplicationBinding(input);
+  if (binding.androidPackage !== undefined) current.androidPackage = binding.androidPackage;
+  if (binding.signingCertificates !== undefined) current.signingCertificates = binding.signingCertificates;
+  if (binding.minVersionCode !== undefined) current.minVersionCode = binding.minVersionCode;
+  const release = normalizeClientRelease(input);
+  if (release.latestVersionCode !== undefined) current.latestVersionCode = release.latestVersionCode;
+  if (release.latestVersionName !== undefined) current.latestVersionName = release.latestVersionName;
+  if (release.releaseNotes !== undefined) current.releaseNotes = release.releaseNotes;
+  assertVersionPolicyConsistent(current.minVersionCode, current.latestVersionCode);
 }
 
 function createClientConfig(application, runtimeConfig) {
@@ -84,6 +103,12 @@ export class ApplicationService {
     // WS4 防重打包：注册应用时可选登记 Android 绑定约束（包名 / 签名证书指纹 / 最低版本）。
     // 未提供则字段缺省，verify/activate 时跳过完整性校验，保持向后兼容。花落/MIT。
     const binding = normalizeApplicationBinding(input);
+    // 花落 / MIT：登记“当前最新版本”，供客户端显示该升到哪个版本。硬拒绝仍由
+    // minVersionCode 决定；此处只描述最新版，不含下载地址。
+    const release = normalizeClientRelease(input);
+    const minVersionCode = binding.minVersionCode ?? null;
+    const latestVersionCode = release.latestVersionCode ?? null;
+    assertVersionPolicyConsistent(minVersionCode, latestVersionCode);
     const now = new Date().toISOString();
     const application = {
       id: appId,
@@ -95,7 +120,10 @@ export class ApplicationService {
       settings,
       androidPackage: binding.androidPackage ?? null,
       signingCertificates: binding.signingCertificates ?? null,
-      minVersionCode: binding.minVersionCode ?? null,
+      minVersionCode,
+      latestVersionCode,
+      latestVersionName: release.latestVersionName ?? null,
+      releaseNotes: release.releaseNotes ?? null,
       signingKeyId,
       signingPublicKey: keyPair.publicKey,
       signingPrivateKeyEncrypted: encryptedPrivateKey,
@@ -185,10 +213,7 @@ export class ApplicationService {
         if (input.description !== undefined) current.description = optionalString(input.description, 'description', { min: 1, max: 500 });
         const settingInput = input.settings || input;
         current.settings = readSettings(settingInput, current.settings);
-        const binding = normalizeApplicationBinding(input);
-        if (binding.androidPackage !== undefined) current.androidPackage = binding.androidPackage;
-        if (binding.signingCertificates !== undefined) current.signingCertificates = binding.signingCertificates;
-        if (binding.minVersionCode !== undefined) current.minVersionCode = binding.minVersionCode;
+        applyBindingAndRelease(current, input);
       });
       return presentApplication(application);
     }
@@ -200,10 +225,7 @@ export class ApplicationService {
       if (input.description !== undefined) application.description = optionalString(input.description, 'description', { min: 1, max: 500 });
       const settingInput = input.settings || input;
       application.settings = readSettings(settingInput, application.settings);
-      const binding = normalizeApplicationBinding(input);
-      if (binding.androidPackage !== undefined) application.androidPackage = binding.androidPackage;
-      if (binding.signingCertificates !== undefined) application.signingCertificates = binding.signingCertificates;
-      if (binding.minVersionCode !== undefined) application.minVersionCode = binding.minVersionCode;
+      applyBindingAndRelease(application, input);
       application.updatedAt = new Date().toISOString();
       AuditService.append(state, {
         actor,

@@ -17,6 +17,7 @@ import { DashboardService } from './services/dashboard-service.js';
 import { MaintenanceService } from './services/maintenance-service.js';
 import { OnlineDeviceService } from './services/online-device-service.js';
 import { ModelDeliveryService } from './services/model-delivery-service.js';
+import { AnnouncementService } from './services/announcement-service.js';
 import { createStore } from './storage/create-store.js';
 
 // Author: 花落. This project is provided under the MIT License.
@@ -31,6 +32,8 @@ export async function createRuntime(configOverrides = {}) {
     await store.close();
     throw error;
   }
+  // 花落 / MIT：公告服务先于其他服务创建，供 VerificationService 在签名载荷里携带公告。
+  const announcements = new AnnouncementService(store, rootSecret, config);
   const services = {
     auth: new AuthService(store, rootSecret, config, securityState),
     merchants: new MerchantService(store),
@@ -39,10 +42,11 @@ export async function createRuntime(configOverrides = {}) {
     products: new ProductService(store),
     orders: new OrderService(store, rootSecret),
     audit: new AuditService(store),
-    verification: new VerificationService(store, rootSecret, config, securityState),
+    verification: new VerificationService(store, rootSecret, config, securityState, announcements),
     dashboard: new DashboardService(store),
     onlineDevices: new OnlineDeviceService(store, config),
     maintenance: new MaintenanceService(store),
+    announcements,
     modelDelivery: null,
     readiness: { async check() { const [storage, security] = await Promise.all([store.ping(), securityState.ping()]); return { storage, security, rootKey: rootSecret.length > 0 }; } },
   };

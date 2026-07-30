@@ -142,3 +142,84 @@ export function normalizeApplicationBinding(input = {}) {
   }
   return result;
 }
+
+// 花落 / MIT：公告与更新提示的纯文本约束。这些文字最终进入签名载荷并下发到全部客户端，
+// 任何富文本或链接能力都会成为攻击者的推送通道，因此在入口直接拒收而不是转义后接受。
+// 标题类字段强制单行；正文类字段允许换行分段，但限制行数，避免用超长空行把客户端
+// 公告卡片顶出屏幕。回车符一律不接受，换行统一用 LF 表示，保证签名载荷逐字节可复现。
+const MARKUP_REJECT_PATTERN = /[<>]|javascript:|data:|vbscript:/i;
+const SINGLE_LINE_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
+// 允许 LF(\u000a) 分段，仍拒绝 CR 与其余控制字符。
+const MULTILINE_CONTROL_PATTERN = /[\u0000-\u0009\u000b-\u001f\u007f]/;
+const MAX_TEXT_LINES = 20;
+
+export function assertPlainText(value, field, { multiline = false } = {}) {
+  const controlPattern = multiline ? MULTILINE_CONTROL_PATTERN : SINGLE_LINE_CONTROL_PATTERN;
+  if (MARKUP_REJECT_PATTERN.test(value) || controlPattern.test(value)) {
+    throw new AppError(
+      'INVALID_INPUT',
+      multiline
+        ? `${field} must be plain text without markup, scheme prefixes or control characters other than line breaks`
+        : `${field} must be plain text on a single line without markup or scheme prefixes`,
+      400,
+    );
+  }
+  if (multiline && value.split('\n').length > MAX_TEXT_LINES) {
+    throw new AppError('INVALID_INPUT', `${field} must not exceed ${MAX_TEXT_LINES} lines`, 400);
+  }
+  return value;
+}
+
+/**
+ * 注册 / 更新应用时校验并规范化“当前最新版本”发布策略。
+ * `minVersionCode` 决定硬拒绝（见 assertClientIntegrity），此处只描述最新版本，
+ * 供客户端显示“该升到哪个版本”。返回值只包含显式提供的键，调用方决定是否覆盖。
+ *
+ * 注意：不接受下载地址。下发 URL 等于开一条“服务端说去哪下载就去哪下载”的通道，
+ * 官方渠道必须编译进客户端，协议层不留跳转注入面。
+ */
+export function normalizeClientRelease(input = {}) {
+  const result = {};
+  if (input.latestVersionCode !== undefined) {
+    result.latestVersionCode = input.latestVersionCode === null
+      ? null
+      : optionalInteger(input.latestVersionCode, 'latestVersionCode', { min: 1, max: MAX_VERSION_CODE });
+  }
+  if (input.latestVersionName !== undefined) {
+    result.latestVersionName = input.latestVersionName === null
+      ? null
+      : assertPlainText(
+        requireString(input.latestVersionName, 'latestVersionName', { min: 1, max: 64 }),
+        'latestVersionName',
+      );
+  }
+  if (input.releaseNotes !== undefined) {
+    result.releaseNotes = input.releaseNotes === null || input.releaseNotes === ''
+      ? null
+      : assertPlainText(
+        requireString(input.releaseNotes, 'releaseNotes', { min: 1, max: 2000 }),
+        'releaseNotes',
+        { multiline: true },
+      );
+  }
+  return result;
+}
+
+/**
+ * 校验最低版本不高于最新版本。两者都由管理员分别设置，一旦
+ * minVersionCode > latestVersionCode，连最新版客户端都会被 426 拒绝，
+ * 全部用户直接锁死且无版本可升——这是自锁陷阱，必须在写入前拦住。
+ * 调用方传入合并后的最终值（已有值 + 本次修改）。
+ */
+export function assertVersionPolicyConsistent(minVersionCode, latestVersionCode) {
+  if (!Number.isSafeInteger(minVersionCode) || !Number.isSafeInteger(latestVersionCode)) {
+    return;
+  }
+  if (minVersionCode > latestVersionCode) {
+    throw new AppError(
+      'INVALID_INPUT',
+      'minVersionCode must not be greater than latestVersionCode; otherwise every client is locked out with no upgrade target',
+      400,
+    );
+  }
+}

@@ -748,6 +748,181 @@ Authorization: Bearer <admin-token>
 
 客户端只有在算法、固定 `keyId`、Ed25519 签名、固定 `appId`、当前请求 `nonce` 与已签名 `requestNonce` 完全一致、`unbound === true` 与 `code === DEVICE_UNBOUND` 全部验证通过后，才能删除本地会话。解绑成功后需要再次输入卡密激活才能恢复授权。
 
+## 公告与版本策略
+
+公告系统通过双通道向客户端下发系统通知和版本更新要求：
+
+- **通道 A**：已激活客户端在 `activate` 和 `verify` 的授权签名载荷中自动获得公告和版本策略
+- **通道 B**：未激活客户端通过独立的公开签名端点 `/api/v1/client/apps/:appId/notices` 获取
+
+两条通道的公告和版本策略均由程序 Ed25519 私钥签名，客户端必须验证签名和 `appId` 后使用。公告载荷包含单调递增序号，客户端必须持久化已见最大序号并拒绝回滚。
+
+### 管理接口
+
+#### `GET /api/v1/apps/:appId/announcements`
+
+需要 `platform_admin`、`merchant_admin` 或 `operator`（只读权限）。返回指定程序的全部公告（包括草稿和已发布），按创建时间倒序。
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "ann-uuid",
+      "applicationId": "app-uuid",
+      "sequence": 3,
+      "status": "published",
+      "severity": "warning",
+      "title": "重要更新提醒",
+      "body": "我们发现了一个影响性能的问题，请尽快更新到最新版本。",
+      "startsAt": "2026-07-25T00:00:00.000Z",
+      "endsAt": "2026-08-05T00:00:00.000Z",
+      "publishedAt": "2026-07-25T10:30:00.000Z",
+      "createdAt": "2026-07-25T10:00:00.000Z",
+      "updatedAt": "2026-07-25T10:30:00.000Z"
+    }
+  ]
+}
+```
+
+#### `POST /api/v1/apps/:appId/announcements`
+
+需要 `platform_admin` 或程序所属商户的 `merchant_admin`（`operator` 无权创建公告）。创建新公告，初始状态为 `draft`，自动分配单调递增序号。
+
+请求体：
+
+```json
+{
+  "title": "维护通知",
+  "body": "系统将于今晚22:00进行例行维护，预计持续2小时。",
+  "severity": "info",
+  "startsAt": "2026-07-30T22:00:00.000Z",
+  "endsAt": "2026-07-31T02:00:00.000Z"
+}
+```
+
+- `title`：必填，2-200 字符，纯文本（拒绝 `<>` 和 JavaScript URI）
+- `body`：必填，10-2000 字符，纯文本，最多 20 行
+- `severity`：必填，枚举 `info`、`warning`、`critical`
+- `startsAt`/`endsAt`：可选，ISO 8601 时间戳，用于时间窗口过滤；`endsAt` 必须晚于 `startsAt`
+
+响应返回完整公告对象（201 Created）。
+
+#### `PATCH /api/v1/announcements/:announcementId`
+
+需要 `platform_admin` 或程序所属商户的 `merchant_admin`。更新公告内容和时间窗口（不能修改 `sequence` 和 `status`）。
+
+请求体示例：
+
+```json
+{
+  "title": "维护通知（已延期）",
+  "endsAt": "2026-07-31T04:00:00.000Z"
+}
+```
+
+所有字段可选，未提供的字段保持不变。
+
+#### `PATCH /api/v1/announcements/:announcementId/status`
+
+需要 `platform_admin` 或程序所属商户的 `merchant_admin`。切换公告状态。
+
+请求体：
+
+```json
+{
+  "status": "published"
+}
+```
+
+- `draft` → `published`：首次发布时记录 `publishedAt` 时间戳
+- `published` → `draft`：取消发布，客户端不再收到
+- `published` → `archived`：归档已过期公告
+
+#### `DELETE /api/v1/announcements/:announcementId`
+
+需要 `platform_admin` 或程序所属商户的 `merchant_admin`。物理删除公告记录。
+
+**重要**：删除公告不会回退程序的 `announcementSequence` 计数器，新创建的公告序号会跳过被删除的序号，确保客户端防回滚机制正常工作。
+
+### 客户端接口
+
+#### `GET /api/v1/client/apps/:appId/notices`
+
+公开端点，无需认证，受限速保护（30 次/60 秒）。返回程序签名的通知信封，包含版本策略和当前有效公告。
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "algorithm": "Ed25519",
+    "keyId": "8f1c4a31e415fe25",
+    "payload": {
+      "type": "client_notice",
+      "protocolVersion": 1,
+      "appId": "app-uuid",
+      "issuedAt": "2026-07-30T12:00:00.000Z",
+      "sequence": 3,
+      "clientPolicy": {
+        "minVersionCode": 100,
+        "latestVersionCode": 120,
+        "latestVersionName": "1.2.0",
+        "releaseNotes": "修复已知问题，优化性能。"
+      },
+      "announcements": [
+        {
+          "id": "ann-uuid",
+          "sequence": 3,
+          "severity": "warning",
+          "title": "重要更新提醒",
+          "body": "我们发现了一个影响性能的问题，请尽快更新到最新版本。",
+          "publishedAt": "2026-07-25T10:30:00.000Z"
+        }
+      ]
+    },
+    "signature": "base64url-ed25519-signature"
+  }
+}
+```
+
+**版本策略字段**：
+
+- `minVersionCode`：硬性最低版本要求，低于此版本的客户端应禁用激活功能
+- `latestVersionCode`/`latestVersionName`/`releaseNotes`：建议更新信息，用于提示用户
+
+**公告列表**：
+
+- 只返回 `status === 'published'` 且在时间窗口内的公告（当前时间在 `startsAt` 和 `endsAt` 之间，缺失时视为无限制）
+- 按 `sequence` 倒序排列，最多返回 3 条
+- `sequence` 为程序级全局计数器，单调递增，删除公告不回退
+
+**客户端验证要求**：
+
+1. 验证 Ed25519 签名和 `keyId`（必须与预置公钥匹配）
+2. 验证 `payload.appId` 与当前程序一致
+3. 验证 `payload.type === 'client_notice'`
+4. 检查 `issuedAt` 时间戳新鲜度（建议容忍 5 分钟内）
+5. **防回滚**：比较 `payload.sequence` 与本地持久化的最大已见序号
+   - 如果 `payload.sequence < lastSeenSequence`，拒绝使用（可能是降级攻击）
+   - 如果 `payload.sequence >= lastSeenSequence`，更新本地记录
+6. 验证通过后，检查 `clientPolicy.minVersionCode`：
+   - 如果当前客户端 `versionCode < minVersionCode`，禁用激活按钮并提示强制更新
+7. 渲染 `announcements` 列表，按 `severity` 分配视觉样式（`critical` 红色，`warning` 橙色，`info` 蓝色）
+
+**签名载荷可用性**：
+
+- 服务端配置 `rootSecret` 和程序签名密钥后才能生成签名
+- 缺少密钥时返回 `503 NOTICE_UNAVAILABLE`
+- 客户端应容错处理：签名验证失败或服务不可用时不阻塞激活流程，仅跳过公告显示
+
+### 通道 A：授权响应中的公告
+
+`activate` 和 `verify` 的成功响应载荷自动包含相同的 `clientPolicy` 和 `announcements` 字段，无需单独请求。客户端应优先使用授权响应中的公告（更及时），仅在未激活状态时回退到通道 B。
+
 ## 常见错误代码
 
 ## 加密模型与云密钥

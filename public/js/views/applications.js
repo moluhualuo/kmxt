@@ -15,6 +15,7 @@ export async function renderApplicationsView() {
     <td><div class="inline-actions">
       <button class="button secondary small" type="button" data-action="select-app" data-id="${escapeHtml(application.id)}">卡密</button>
       <button class="button secondary small" type="button" data-action="select-app-models" data-id="${escapeHtml(application.id)}">${icon('package-check')}模型</button>
+      <button class="button secondary small" type="button" data-action="select-app-announcements" data-id="${escapeHtml(application.id)}">${icon('megaphone')}公告</button>
       <button class="button secondary small" type="button" data-action="download-client-config" data-format="json" data-id="${escapeHtml(application.id)}" data-code="${escapeHtml(application.code)}">JSON</button>
       <button class="button secondary small" type="button" data-action="download-client-config" data-format="hpp" data-id="${escapeHtml(application.id)}" data-code="${escapeHtml(application.code)}">HPP</button>
       ${isOwner() ? `<button class="icon-button" type="button" data-action="edit-app" data-id="${escapeHtml(application.id)}" aria-label="编辑 ${escapeHtml(application.name)}" title="编辑程序">${icon('pencil')}</button>` : ''}

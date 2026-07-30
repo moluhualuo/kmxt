@@ -451,6 +451,23 @@ std::string validate_model_lease(const std::string& envelope_json,
     }
 }
 
+/**
+ * 通道 B 校验。刻意不碰任何授权状态：公告是纯展示数据，未激活用户也要能读到，
+ * 因此这里既不要求 authorization_valid_locked()，失败时也绝不调用 clear_authorization()。
+ *
+ * 花落 / MIT：把公告校验失败与授权状态耦合会造出一个新的攻击面——攻击者只要向
+ * 公告端点回放一个畸形响应，就能把已激活用户的授权状态清掉，等于用一个展示通道
+ * 拿到了远程踢线能力。信任锚仍取自 kTrustAnchors（未改动），验签一步不放松。
+ */
+std::string validate_notice(const std::string& envelope_json,
+                            std::int64_t min_accepted_sequence) {
+    const TrustAnchor* trust = current_trust_anchor();
+    if (!trust) return failed("INVALID_RESPONSE");
+    return kmxt::validate_notice_envelope(
+        envelope_json, trust->app_id, trust->key_id, trust->public_key,
+        current_time_millis(), min_accepted_sequence);
+}
+
 void clear_authorization_state() {
     std::scoped_lock lock(state_mutex);
     clear_authorization_locked();

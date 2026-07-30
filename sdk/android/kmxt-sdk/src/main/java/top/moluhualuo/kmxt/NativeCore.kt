@@ -14,6 +14,9 @@ internal object NativeCore {
     external fun validateVerificationEnvelope(envelope: String): String
     external fun validateUnbindEnvelope(envelope: String): String
     external fun validateModelLeaseEnvelope(envelope: String, artifactId: String): String
+
+    // 花落 / MIT：通道 B 公告信封校验。minSequence 为持久化的防回滚水位，由调用方读出后传入。
+    external fun validateNoticeEnvelope(envelope: String, minSequence: Long): String
     external fun decryptModelLease(handle: Long, ciphertext: ByteArray): ByteArray?
     external fun releaseModelLease(handle: Long)
     external fun clearAuthorization()

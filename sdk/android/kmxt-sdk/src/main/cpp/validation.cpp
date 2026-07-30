@@ -16,6 +16,19 @@ constexpr std::int64_t kClockSkewMs = 5LL * 60LL * 1000LL;
 constexpr std::int64_t kMaxModelLeaseMs = 15LL * 60LL * 1000LL;
 constexpr std::int64_t kMaxModelBytes = 2LL * 1024LL * 1024LL * 1024LL;
 
+// 花落 / MIT：公告与版本策略的形状上限。通道 B 没有请求 nonce，只能靠 issuedAt
+// 新鲜度窗口收敛重放范围，所以这里的窗口比授权信封的时钟偏移更严格地单独定义。
+constexpr std::int64_t kNoticeFreshnessMs = 10LL * 60LL * 1000LL;
+constexpr std::size_t kMaxNoticeItems = 3;
+// 服务端按「字符数」限长（title 100 / body 2000），此处按字节比较，
+// 因此统一放大 4 倍取 UTF-8 单字符最坏情况，既不误杀中文也不给出无界缓冲。
+constexpr std::size_t kMaxNoticeTitleBytes = 400;
+constexpr std::size_t kMaxNoticeBodyBytes = 8000;
+constexpr std::size_t kMaxVersionNameBytes = 64;
+constexpr std::size_t kMaxReleaseNotesBytes = 8000;
+constexpr std::int64_t kMaxVersionCode = 2147483647LL;
+constexpr std::int64_t kMaxNoticeSequence = 1LL << 40;
+
 std::string failed(const char* code) {
     return json{{"valid", false}, {"code", code}}.dump();
 }
@@ -138,6 +151,119 @@ bool exact_decoded_size(const json& object, const char* field, std::size_t expec
     return kmxt::decode_base64url(object[field].get<std::string>()).size() == expected;
 }
 
+/**
+ * 公告文本的原生复检。服务端已经拒收标记与控制字符，这里再查一遍：
+ * 这些字符串会直接进入 Android 展示层，一旦服务端被攻陷或存在绕过，
+ * 原生层必须是最后一道拒收点，而不是把内容原样交给 Kotlin。
+ * 允许 LF 分段（与服务端 multiline 规则一致），拒收其余 C0 控制字符与 DEL。
+ */
+bool is_display_text(const std::string& value, std::size_t max_bytes, bool allow_newline) {
+    if (value.empty() || value.size() > max_bytes) return false;
+    for (const unsigned char character : value) {
+        if (character == 0x0a) {
+            if (!allow_newline) return false;
+            continue;
+        }
+        if (character < 0x20 || character == 0x7f) return false;
+    }
+    return true;
+}
+
+bool optional_display_text(const json& object, const char* field,
+                           std::size_t max_bytes, bool allow_newline) {
+    // 字段缺失或显式 null 都视为「未配置」，直接通过：老服务端不会带这些字段，
+    // 新客户端不能因此拒收合法响应。字段存在但类型或内容非法则必须失败。
+    if (!object.contains(field) || object[field].is_null()) return true;
+    if (!object[field].is_string()) return false;
+    return is_display_text(object[field].get<std::string>(), max_bytes, allow_newline);
+}
+
+bool optional_version_code(const json& object, const char* field) {
+    if (!object.contains(field) || object[field].is_null()) return true;
+    if (!object[field].is_number_integer()) return false;
+    const auto value = object[field].get<std::int64_t>();
+    return value >= 0 && value <= kMaxVersionCode;
+}
+
+/**
+ * 版本策略校验。缺失整个 clientPolicy 对象是合法的（未配置强制更新）。
+ * 存在则每个字段都必须形状正确，且 minVersionCode 不得高于 latestVersionCode——
+ * 后者会把全部客户端永久锁死，服务端已拒收，原生层同样不接受。
+ */
+bool valid_client_policy(const json& payload) {
+    if (!payload.contains("clientPolicy") || payload["clientPolicy"].is_null()) return true;
+    if (!payload["clientPolicy"].is_object()) return false;
+    const json& policy = payload["clientPolicy"];
+    if (!optional_version_code(policy, "minVersionCode")
+        || !optional_version_code(policy, "latestVersionCode")
+        || !optional_display_text(policy, "latestVersionName", kMaxVersionNameBytes, false)
+        || !optional_display_text(policy, "releaseNotes", kMaxReleaseNotesBytes, true)) {
+        return false;
+    }
+    if (policy.contains("minVersionCode") && !policy["minVersionCode"].is_null()
+        && policy.contains("latestVersionCode") && !policy["latestVersionCode"].is_null()
+        && policy["minVersionCode"].get<std::int64_t>()
+            > policy["latestVersionCode"].get<std::int64_t>()) {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * 公告数组校验。缺失视为空列表；存在则条数、每条的字段形状、severity 枚举
+ * 与序号单调性都必须成立。sequence 必须严格递减（服务端按序号倒序下发），
+ * 这样客户端拿到的最大序号一定是首条，防回滚比较无需重新排序。
+ */
+bool valid_announcements(const json& payload) {
+    if (!payload.contains("announcements") || payload["announcements"].is_null()) return true;
+    if (!payload["announcements"].is_array()) return false;
+    const json& items = payload["announcements"];
+    if (items.size() > kMaxNoticeItems) return false;
+    static const std::array<const char*, 3> severities = {"info", "warning", "critical"};
+    std::int64_t previous_sequence = kMaxNoticeSequence + 1;
+    for (const json& item : items) {
+        if (!item.is_object()) return false;
+        if (!is_string(item, "id") || !is_uuid(item["id"].get<std::string>())) return false;
+        if (!integer_between(item, "sequence", 1, kMaxNoticeSequence)) return false;
+        const std::int64_t sequence = item["sequence"].get<std::int64_t>();
+        if (sequence >= previous_sequence) return false;
+        previous_sequence = sequence;
+        const std::string severity = item.value("severity", "");
+        if (std::find(severities.begin(), severities.end(), severity) == severities.end()) {
+            return false;
+        }
+        if (!is_string(item, "title")
+            || !is_display_text(item["title"].get<std::string>(), kMaxNoticeTitleBytes, false)) {
+            return false;
+        }
+        if (!is_string(item, "body")
+            || !is_display_text(item["body"].get<std::string>(), kMaxNoticeBodyBytes, true)) {
+            return false;
+        }
+        if (item.contains("publishedAt") && !item["publishedAt"].is_null()) {
+            std::int64_t published = 0;
+            if (!item["publishedAt"].is_string()
+                || !parse_iso8601_millis_impl(item["publishedAt"].get<std::string>(), published)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/**
+ * 通道 A：授权响应里搭载的公告与版本策略。
+ *
+ * 花落 / MIT：这里刻意「剥离」而不是「拒收」。载荷已经通过 Ed25519 验签，畸形内容
+ * 只可能来自服务端自身的 bug，而不是攻击者伪造。若因为一条公告格式不对就否掉整个
+ * 授权响应，一个纯展示字段的服务端缺陷会直接演变成全体客户端断授权。因此形状不合法
+ * 时把这两个字段删掉再放行授权——展示层拿不到数据（fail-closed），授权不受影响。
+ */
+void strip_invalid_client_context(json& payload) {
+    if (!valid_client_policy(payload)) payload.erase("clientPolicy");
+    if (!valid_announcements(payload)) payload.erase("announcements");
+}
+
 }  // namespace
 
 namespace kmxt {
@@ -188,6 +314,8 @@ std::string validate_authorization_envelope(const std::string& envelope_json,
     } else if (payload.contains("sessionToken")) {
         return failed("INVALID_RESPONSE");
     }
+    // 公告与版本策略是搭载的展示数据，形状非法只剥离、不否决授权（见注释）。
+    strip_invalid_client_context(payload);
     return accepted(payload);
 }
 
@@ -292,6 +420,51 @@ std::string validate_model_lease_envelope(const std::string& envelope_json,
     const std::string expected_associated_data = expected_app_id + "|" + expected_artifact_id + "|"
         + version + "|" + cipher_hash + "|" + binding_id + "|" + lease_id + "|" + expected_request_nonce;
     if (wrapped.value("associatedData", "") != expected_associated_data) return failed("INVALID_RESPONSE");
+    return accepted(payload);
+}
+
+/**
+ * 通道 B：公开公告信封。整个载荷都是展示数据，因此形状不合法就整体拒收。
+ *
+ * 花落 / MIT：这个通道没有请求 nonce，可被重放，用两层收敛：
+ *   1. issuedAt 必须落在 kNoticeFreshnessMs 新鲜度窗口内，把重放限制在十分钟量级；
+ *   2. sequence 必须不低于调用方持久化的 min_accepted_sequence，拒绝历史信封回滚。
+ * 两者都不涉及授权决策，最坏情况是展示一条十分钟内的旧公告。
+ */
+std::string validate_notice_envelope(const std::string& envelope_json,
+                                     const std::string& expected_app_id,
+                                     const std::string& expected_key_id,
+                                     const std::string& public_key_pem,
+                                     std::int64_t now_millis,
+                                     std::int64_t min_accepted_sequence) {
+    json payload;
+    std::string error;
+    if (!signed_payload(envelope_json, expected_key_id, public_key_pem, payload, error)) {
+        return failed(error.c_str());
+    }
+    if (!is_string(payload, "appId") || payload["appId"] != expected_app_id) {
+        return failed("WRONG_APPLICATION");
+    }
+    if (payload.value("type", "") != "client_notice") return failed("INVALID_RESPONSE");
+    if (payload.value("protocolVersion", -1) != 1) return failed("INVALID_RESPONSE");
+    std::int64_t issued = 0;
+    if (!is_string(payload, "issuedAt")
+        || !parse_iso8601_millis(payload["issuedAt"].get<std::string>(), issued)
+        || issued < now_millis - kNoticeFreshnessMs
+        || issued > now_millis + kClockSkewMs) {
+        return failed("INVALID_RESPONSE");
+    }
+    // sequence 为 0 表示当前没有可下发公告，是合法状态，客户端据此清空本地展示。
+    if (!integer_between(payload, "sequence", 0, kMaxNoticeSequence)) {
+        return failed("INVALID_RESPONSE");
+    }
+    if (min_accepted_sequence > 0
+        && payload["sequence"].get<std::int64_t>() < min_accepted_sequence) {
+        return failed("NOTICE_ROLLBACK");
+    }
+    if (!valid_client_policy(payload) || !valid_announcements(payload)) {
+        return failed("INVALID_RESPONSE");
+    }
     return accepted(payload);
 }
 

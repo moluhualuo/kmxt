@@ -112,6 +112,33 @@ class KmxtLicenseClient(
         }
     }
 
+    /**
+     * 通道 B：读取公开公告与版本策略。无需卡密会话，未激活用户也可调用。
+     *
+     * 花落 / MIT：调用方必须把它当作「纯展示数据」，不得用返回值做任何放行判断。
+     * 强制更新的真正拒绝点在服务端（activate/verify 返回 426 CLIENT_UPDATE_REQUIRED），
+     * 这里的 policy 只用于把「为什么被拒」告诉用户。若把放行判断建在这个通道上，
+     * 攻击者只要断掉这一个请求就能绕过强制更新——这正是要避免的漏洞。
+     *
+     * 响应经原生层验签 + 形状校验 + 序号防回滚；通过后水位才落盘。
+     */
+    suspend fun fetchNotices(): NoticeBundle = withContext(Dispatchers.IO) {
+        val envelope = get("/api/v1/client/apps/${config.appId}/notices")
+        val minimumSequence = sessions.loadNoticeSequence()
+        val payload = nativePayload(
+            NativeCore.validateNoticeEnvelope(envelope.toString(), minimumSequence),
+        )
+        val sequence = payload.optLong("sequence", 0L)
+        sessions.saveNoticeSequence(sequence)
+        NoticeBundle(
+            sequence = sequence,
+            issuedAt = payload.optString("issuedAt"),
+            policy = readClientPolicy(payload.optJSONObject("clientPolicy"))
+                ?: ClientPolicy(null, null, null, null),
+            announcements = readAnnouncements(payload.optJSONArray("announcements")),
+        )
+    }
+
     fun clearSession() {
         sessions.clear()
         NativeCore.clearAuthorization()
@@ -158,13 +185,21 @@ class KmxtLicenseClient(
         return NativeModelRequest(nonce, clientPublicKey)
     }
 
-    private fun post(path: String, body: JSONObject): JSONObject {
-        val request = Request.Builder()
-            .url(config.baseUrl.trimEnd('/') + path)
-            .header("Accept", "application/json")
-            .header("User-Agent", "KMXT-Android/0.5.0")
-            .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
-            .build()
+    private fun post(path: String, body: JSONObject): JSONObject = execute(
+        baseRequest(path).post(body.toString().toRequestBody(JSON_MEDIA_TYPE)).build(),
+    )
+
+    // 花落 / MIT：通道 B 是只读 GET，复用 post 的响应处理（success/error/data 与错误码映射），
+    // 避免两条路径对服务端错误的解释产生分歧。传输层约束（禁跳转、HTTPS）由同一个
+    // OkHttpClient 与 KmxtConfig 的 https 断言保证，公告通道不放松任何一项。
+    private fun get(path: String): JSONObject = execute(baseRequest(path).get().build())
+
+    private fun baseRequest(path: String) = Request.Builder()
+        .url(config.baseUrl.trimEnd('/') + path)
+        .header("Accept", "application/json")
+        .header("User-Agent", "KMXT-Android/0.5.0")
+
+    private fun execute(request: Request): JSONObject {
         val raw = try {
             client.newCall(request).execute().use { response ->
                 response.body?.string() ?: throw LicenseException(LicenseErrorCode.INVALID_RESPONSE, "Empty server response")
@@ -206,6 +241,10 @@ class KmxtLicenseClient(
             licenseExpiresAt = payload.getString("licenseExpiresAt"),
             sessionExpiresAt = payload.getString("sessionExpiresAt"),
             heartbeatAfterSeconds = payload.getLong("heartbeatAfterSeconds"),
+            // 花落 / MIT：通道 A 搭载的展示数据。原生层已经校验过形状并在非法时剥离，
+            // 这里只做读取；缺失是正常状态（老服务端、或被原生层剥离），不抛异常。
+            policy = readClientPolicy(payload.optJSONObject("clientPolicy")),
+            announcements = readAnnouncements(payload.optJSONArray("announcements")),
         )
         return ValidatedAuthorization(status, payload)
     }
@@ -264,6 +303,47 @@ class KmxtLicenseClient(
             expiresAt = expiresAt,
             nativeHandle = nativeHandle,
         )
+    }
+
+    /** 缺失或显式 null 的字段统一读成 null，避免把 JSON null 读成字符串 "null"。*/
+    private fun optionalString(source: JSONObject, field: String): String? {
+        if (!source.has(field) || source.isNull(field)) return null
+        return source.optString(field).takeIf { it.isNotEmpty() }
+    }
+
+    private fun optionalLong(source: JSONObject, field: String): Long? {
+        if (!source.has(field) || source.isNull(field)) return null
+        return source.optLong(field, -1L).takeIf { it >= 0L }
+    }
+
+    private fun readClientPolicy(source: JSONObject?): ClientPolicy? {
+        if (source == null) return null
+        return ClientPolicy(
+            minVersionCode = optionalLong(source, "minVersionCode"),
+            latestVersionCode = optionalLong(source, "latestVersionCode"),
+            latestVersionName = optionalString(source, "latestVersionName"),
+            releaseNotes = optionalString(source, "releaseNotes"),
+        )
+    }
+
+    private fun readAnnouncements(source: org.json.JSONArray?): List<Announcement> {
+        if (source == null) return emptyList()
+        val result = ArrayList<Announcement>(source.length())
+        for (index in 0 until source.length()) {
+            val item = source.optJSONObject(index) ?: continue
+            val id = optionalString(item, "id") ?: continue
+            val title = optionalString(item, "title") ?: continue
+            val body = optionalString(item, "body") ?: continue
+            result.add(Announcement(
+                id = id,
+                sequence = item.optLong("sequence", 0L),
+                severity = AnnouncementSeverity.parse(optionalString(item, "severity")),
+                title = title,
+                body = body,
+                publishedAt = optionalString(item, "publishedAt"),
+            ))
+        }
+        return result
     }
 
     private fun mapServerCode(code: String?): LicenseErrorCode = when (code) {

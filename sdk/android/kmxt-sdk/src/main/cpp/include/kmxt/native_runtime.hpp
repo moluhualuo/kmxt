@@ -17,6 +17,10 @@ std::string validate_verification(const std::string& envelope_json);
 std::string validate_unbind(const std::string& envelope_json);
 std::string validate_model_lease(const std::string& envelope_json,
     const std::string& expected_artifact_id);
+// 花落 / MIT：通道 B 公开公告信封校验。min_accepted_sequence 由 Kotlin 侧从持久化
+// 存储读出后传入，原生层只做无状态判定，不自行持有防回滚水位——水位必须跨进程存活。
+std::string validate_notice(const std::string& envelope_json,
+    std::int64_t min_accepted_sequence);
 void clear_authorization_state();
 bool decrypt_model_lease(std::uint64_t handle,
     const std::vector<unsigned char>& ciphertext, std::vector<unsigned char>& plaintext);

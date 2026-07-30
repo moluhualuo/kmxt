@@ -99,6 +99,34 @@ json authorization_payload(const std::string& request_nonce, bool include_token)
     return payload;
 }
 
+json notice_payload(std::int64_t sequence = 5) {
+    json announcements = json::array();
+    if (sequence > 0) {
+        announcements.push_back({
+            {"id", "44444444-4444-4444-8444-444444444444"},
+            {"sequence", sequence},
+            {"severity", "warning"},
+            {"title", "测试公告"},
+            {"body", "这是一条测试公告的正文内容。\n可以包含换行。"},
+            {"publishedAt", "1970-01-01T00:01:00.000Z"},
+        });
+    }
+    return {
+        {"type", "client_notice"},
+        {"protocolVersion", 1},
+        {"appId", kAppId},
+        {"issuedAt", "1970-01-01T00:02:00.000Z"},
+        {"sequence", sequence},
+        {"clientPolicy", {
+            {"minVersionCode", 100},
+            {"latestVersionCode", 120},
+            {"latestVersionName", "1.2.0"},
+            {"releaseNotes", "修复已知问题。"},
+        }},
+        {"announcements", announcements},
+    };
+}
+
 json model_payload(const std::string& request_nonce, const std::string& client_public_key) {
     const std::string lease_id = "33333333-3333-4333-8333-333333333333";
     const std::string binding_id = "22222222-2222-4222-8222-222222222222";
@@ -318,6 +346,40 @@ int main() {
         expect_result(kmxt::validate_model_lease_envelope(envelope(key.get(), lease),
             kAppId, kKeyId, public_key, kArtifactId, nonce, client_public_key, kNow),
             false, "INVALID_RESPONSE");
+
+        // 花落 / MIT：通道 B 公告信封测试向量。验证新鲜度窗口、防回滚序号、形状校验。
+        json notice = notice_payload(5);
+        expect_result(kmxt::validate_notice_envelope(envelope(key.get(), notice),
+            kAppId, kKeyId, public_key, kNow, 0), true, "OK");
+        // minSequence = 5 时，sequence = 5 刚好及格。
+        expect_result(kmxt::validate_notice_envelope(envelope(key.get(), notice),
+            kAppId, kKeyId, public_key, kNow, 5), true, "OK");
+        // minSequence = 6 时，sequence = 5 被拒收（回滚）。
+        expect_result(kmxt::validate_notice_envelope(envelope(key.get(), notice),
+            kAppId, kKeyId, public_key, kNow, 6), false, "NOTICE_ROLLBACK");
+        // sequence = 0 表示无公告，不受防回滚限制。
+        json empty_notice = notice_payload(0);
+        expect_result(kmxt::validate_notice_envelope(envelope(key.get(), empty_notice),
+            kAppId, kKeyId, public_key, kNow, 100), true, "OK");
+        // 类型错误拒收。
+        notice["type"] = "wrong_type";
+        expect_result(kmxt::validate_notice_envelope(envelope(key.get(), notice),
+            kAppId, kKeyId, public_key, kNow, 0), false, "INVALID_RESPONSE");
+        notice["type"] = "client_notice";
+        // 新鲜度窗口之外拒收（10 分钟）。
+        notice["issuedAt"] = "1970-01-01T00:13:00.000Z";
+        expect_result(kmxt::validate_notice_envelope(envelope(key.get(), notice),
+            kAppId, kKeyId, public_key, kNow, 0), false, "INVALID_RESPONSE");
+        notice["issuedAt"] = "1970-01-01T00:02:00.000Z";
+        // 公告数组形状错误时整体拒收。
+        notice["announcements"] = "not-an-array";
+        expect_result(kmxt::validate_notice_envelope(envelope(key.get(), notice),
+            kAppId, kKeyId, public_key, kNow, 0), false, "INVALID_RESPONSE");
+        notice["announcements"] = json::array();
+        // 版本策略 minVersionCode > latestVersionCode 拒收。
+        notice["clientPolicy"]["minVersionCode"] = 200;
+        expect_result(kmxt::validate_notice_envelope(envelope(key.get(), notice),
+            kAppId, kKeyId, public_key, kNow, 0), false, "INVALID_RESPONSE");
 
         test_model_crypto();
         std::cout << "KMXT native core vectors passed" << std::endl;

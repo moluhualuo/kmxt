@@ -18,6 +18,7 @@ import { renderOverviewView } from './views/overview.js';
 import { renderMerchantsView } from './views/merchants.js';
 import { renderApplicationsView } from './views/applications.js';
 import { renderModelArtifactsView } from './views/model-artifacts.js';
+import { renderAnnouncementsView } from './views/announcements.js';
 import { renderLicensesView } from './views/licenses.js';
 import { renderOnlineDevicesView } from './views/online-devices.js';
 import { renderProductsView } from './views/products.js';
@@ -31,6 +32,7 @@ const VIEW_LABELS = Object.freeze({
   merchants: ['商户', '平台租户管理'],
   applications: ['程序', '程序与授权策略'],
   modelArtifacts: ['模型制品', '加密模型版本与交付状态'],
+  announcements: ['公告', '客户端签名公告与版本策略'],
   licenses: ['卡密', '卡密与设备绑定'],
   onlineDevices: ['在线设备', '客户端在线状态与会话控制'],
   products: ['商品', '用户购买套餐'],
@@ -199,6 +201,7 @@ function availableViews(user = store.value.user) {
   items.push(
     { id: 'applications', icon: 'boxes', label: '程序' },
     { id: 'modelArtifacts', icon: 'package-check', label: '模型制品' },
+    { id: 'announcements', icon: 'megaphone', label: '公告' },
     { id: 'licenses', icon: 'key-round', label: '卡密' },
     { id: 'onlineDevices', icon: 'monitor-smartphone', label: '在线设备' },
     { id: 'products', icon: 'shopping-bag', label: '商品' },
@@ -286,6 +289,7 @@ async function renderCurrentView() {
       case 'merchants': html = await renderMerchantsView(); break;
       case 'applications': html = await renderApplicationsView(); break;
       case 'modelArtifacts': html = await renderModelArtifactsView(); break;
+      case 'announcements': html = await renderAnnouncementsView(); break;
       case 'licenses': html = await renderLicensesView(); break;
       case 'onlineDevices': html = await renderOnlineDevicesView(); break;
       case 'products': html = await renderProductsView(); break;
@@ -493,6 +497,10 @@ function openCreateApplication() {
 function openEditApplication(application) {
   if (!application || !isOwner()) return;
   const settings = application.settings;
+  // 花落 / MIT：后端 presentApplication 把绑定与版本策略分别放在 binding / release 下；
+  // 老响应可能不含这两个对象，回填时一律兜空对象，避免表单因 undefined 直接抛错。
+  const binding = application.binding || {};
+  const release = application.release || {};
   openFormDialog({
     title: '编辑程序设置',
     submitLabel: '保存设置',
@@ -505,8 +513,31 @@ function openEditApplication(application) {
       <div class="field"><label for="app-edit-devices">默认设备数（0 表示无限制）</label><input class="input" id="app-edit-devices" name="defaultMaxDevices" type="number" min="0" max="20" value="${settings.defaultMaxDevices}" required></div>
       <div class="field"><label for="app-edit-heartbeat">心跳间隔（秒）</label><input class="input" id="app-edit-heartbeat" name="heartbeatSeconds" type="number" min="30" max="86400" value="${settings.heartbeatSeconds}" required></div>
       <div class="field"><label for="app-edit-offline">离线宽限（秒）</label><input class="input" id="app-edit-offline" name="offlineGraceSeconds" type="number" min="60" max="604800" value="${settings.offlineGraceSeconds}" required></div>
+      <div class="field full"><h3 class="form-section-title">防重打包绑定</h3><p class="field-hint">登记后，服务端会强制校验客户端上报的包名与签名证书；不匹配一律拒绝授权。留空表示不校验该项。</p></div>
+      <div class="field"><label for="app-edit-package">Android 包名</label><input class="input mono" id="app-edit-package" name="androidPackage" maxlength="255" placeholder="com.example.app" value="${escapeHtml(binding.androidPackage || '')}"></div>
+      <div class="field"><label for="app-edit-min-version">最低可用 versionCode</label><input class="input" id="app-edit-min-version" name="minVersionCode" type="number" min="1" max="2100000000" value="${binding.minVersionCode ?? ''}"><span class="field-hint">低于此版本的客户端会被服务端以 426 拒绝，无法使用。</span></div>
+      <div class="field full"><label for="app-edit-certs">签名证书 SHA-256（每行一条，最多 8 条）</label><textarea class="textarea mono" id="app-edit-certs" name="signingCertificates" rows="3" placeholder="每行 64 位十六进制摘要">${escapeHtml((binding.signingCertificates || []).join('\n'))}</textarea></div>
+      <div class="field full"><h3 class="form-section-title">最新版本与更新提示</h3><p class="field-hint">仅用于客户端展示引导，不参与放行判断。最低版本不得高于最新版本，否则全部用户都会被锁死。</p></div>
+      <div class="field"><label for="app-edit-latest-code">最新 versionCode</label><input class="input" id="app-edit-latest-code" name="latestVersionCode" type="number" min="1" max="2100000000" value="${release.latestVersionCode ?? ''}"></div>
+      <div class="field"><label for="app-edit-latest-name">最新版本号</label><input class="input" id="app-edit-latest-name" name="latestVersionName" maxlength="64" placeholder="1.2.0" value="${escapeHtml(release.latestVersionName || '')}"></div>
+      <div class="field full"><label for="app-edit-release-notes">更新说明</label><textarea class="textarea" id="app-edit-release-notes" name="releaseNotes" maxlength="2000" rows="3" placeholder="纯文本，可换行分段">${escapeHtml(release.releaseNotes || '')}</textarea></div>
     </div>`,
     onSubmit: async (form) => {
+      // 花落 / MIT：空输入统一送 null（清除登记），而不是省略字段或送空串。
+      // 服务端把 undefined 当「不修改」、null 当「清除」，两者语义不同；
+      // 送空串会撞上 min 长度校验直接报错，管理员就没法取消已有登记。
+      const optionalText = (field) => {
+        const value = String(form.get(field) ?? '').trim();
+        return value === '' ? null : value;
+      };
+      const optionalCount = (field) => {
+        const value = String(form.get(field) ?? '').trim();
+        return value === '' ? null : Number(value);
+      };
+      const certificates = String(form.get('signingCertificates') ?? '')
+        .split('\n')
+        .map((line) => line.trim().toLowerCase())
+        .filter((line) => line !== '');
       const updated = await api.patch(`/api/v1/apps/${encodeURIComponent(application.id)}`, {
         name: form.get('name'),
         description: form.get('description') || '',
@@ -516,10 +547,78 @@ function openEditApplication(application) {
           heartbeatSeconds: Number(form.get('heartbeatSeconds')),
           offlineGraceSeconds: Number(form.get('offlineGraceSeconds')),
         },
+        androidPackage: optionalText('androidPackage'),
+        minVersionCode: optionalCount('minVersionCode'),
+        signingCertificates: certificates.length ? certificates : null,
+        latestVersionCode: optionalCount('latestVersionCode'),
+        latestVersionName: optionalText('latestVersionName'),
+        releaseNotes: optionalText('releaseNotes'),
       });
       store.patch({ applications: store.value.applications.map((item) => item.id === updated.id ? updated : item) });
       showToast('程序设置已保存，签名密钥未变更。');
       renderShell();
+      await renderCurrentView();
+    },
+  });
+}
+
+/**
+ * 公告表单。新建与编辑共用，编辑时回填现有内容。
+ *
+ * 花落 / MIT：公告正文会被程序私钥签名后下发到全部客户端，所以这里只收纯文本，
+ * 不提供富文本、链接或图片能力。服务端会再拒收 < > 与控制字符，前端不做转义后放行，
+ * 以免管理员误以为可以写 HTML。datetime-local 的值是本地时间，提交前转成 ISO 字符串。
+ */
+function openAnnouncementForm(announcement = null) {
+  const application = store.application;
+  if (!application || !isOwner()) return;
+  // datetime-local 需要 "YYYY-MM-DDTHH:mm" 本地时间格式，不能直接塞 ISO(UTC) 字符串，
+  // 否则会按 UTC 数值显示成错误的本地时间。
+  const toLocalInput = (value) => {
+    if (!value) return '';
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) return '';
+    const date = new Date(timestamp - new Date(timestamp).getTimezoneOffset() * 60000);
+    return date.toISOString().slice(0, 16);
+  };
+  const severity = announcement?.severity || 'info';
+  openFormDialog({
+    title: announcement ? '编辑公告' : '新建公告',
+    submitLabel: announcement ? '保存公告' : '创建公告',
+    wide: true,
+    content: `<div class="form-grid">
+      <div class="field full"><label for="announcement-title">标题</label><input class="input" id="announcement-title" name="title" minlength="1" maxlength="100" value="${escapeHtml(announcement?.title || '')}" required autofocus><span class="field-hint">单行纯文本，不支持 HTML 或链接。</span></div>
+      <div class="field full"><label for="announcement-body">正文</label><textarea class="textarea" id="announcement-body" name="body" maxlength="2000" rows="6" required placeholder="纯文本，可换行分段，最多 20 段">${escapeHtml(announcement?.body || '')}</textarea></div>
+      <div class="field"><label for="announcement-severity">级别</label><select class="select" id="announcement-severity" name="severity">
+        <option value="info" ${severity === 'info' ? 'selected' : ''}>普通</option>
+        <option value="warning" ${severity === 'warning' ? 'selected' : ''}>提醒</option>
+        <option value="critical" ${severity === 'critical' ? 'selected' : ''}>重要</option>
+      </select></div>
+      <div class="field"><label for="announcement-starts">生效时间（可空）</label><input class="input" id="announcement-starts" name="startsAt" type="datetime-local" value="${escapeHtml(toLocalInput(announcement?.startsAt))}"><span class="field-hint">留空表示立即生效。</span></div>
+      <div class="field"><label for="announcement-ends">结束时间（可空）</label><input class="input" id="announcement-ends" name="endsAt" type="datetime-local" value="${escapeHtml(toLocalInput(announcement?.endsAt))}"><span class="field-hint">留空表示长期有效，必须晚于生效时间。</span></div>
+    </div>`,
+    onSubmit: async (form) => {
+      const toIso = (field) => {
+        const value = String(form.get(field) ?? '').trim();
+        if (value === '') return null;
+        const timestamp = Date.parse(value);
+        if (!Number.isFinite(timestamp)) return null;
+        return new Date(timestamp).toISOString();
+      };
+      const payload = {
+        title: form.get('title'),
+        body: form.get('body'),
+        severity: form.get('severity'),
+        startsAt: toIso('startsAt'),
+        endsAt: toIso('endsAt'),
+      };
+      if (announcement) {
+        await api.patch(`/api/v1/announcements/${encodeURIComponent(announcement.id)}`, payload);
+        showToast('公告已保存。');
+      } else {
+        await api.post(`/api/v1/apps/${encodeURIComponent(application.id)}/announcements`, payload);
+        showToast('公告已创建，当前为草稿，发布后才会下发。');
+      }
       await renderCurrentView();
     },
   });
@@ -893,6 +992,11 @@ document.addEventListener('click', async (event) => {
     location.hash = 'modelArtifacts';
     renderShell();
     await renderCurrentView();
+  } else if (action === 'select-app-announcements') {
+    store.patch({ selectedAppId: id, announcements: [], view: 'announcements' });
+    location.hash = 'announcements';
+    renderShell();
+    await renderCurrentView();
   } else if (action === 'download-client-config') {
     await performAction(async () => {
       const result = await api.get(`/api/v1/apps/${encodeURIComponent(id)}/client-config`);
@@ -947,6 +1051,30 @@ document.addEventListener('click', async (event) => {
     if (confirmed) await performAction(async () => {
       await api.patch(`/api/v1/artifacts/${encodeURIComponent(id)}/status`, { status: nextStatus });
       showToast(nextStatus === 'active' ? '模型制品已激活。' : nextStatus === 'draft' ? '模型制品已退回草稿。' : '模型制品已吊销。');
+      await renderCurrentView();
+    });
+  } else if (action === 'create-announcement') {
+    openAnnouncementForm(null);
+  } else if (action === 'edit-announcement') {
+    const announcement = (store.value.announcements || []).find((item) => item.id === id);
+    if (announcement) openAnnouncementForm(announcement);
+  } else if (action === 'toggle-announcement') {
+    // 花落 / MIT：发布会让公告立刻进入签名载荷下发到全部客户端，因此二次确认；
+    // 撤回只影响后续下发，已经拿到旧签名信封的客户端在新鲜度窗口内仍可能展示。
+    const nextStatus = status === 'published' ? 'draft' : 'published';
+    const confirmed = await confirmAction(nextStatus === 'published'
+      ? { title: '发布公告', message: '发布后该公告会经程序私钥签名下发到全部客户端，请确认内容无误。', confirmLabel: '确认发布' }
+      : { title: '撤回为草稿', message: '撤回后不再下发新公告，但已下发的签名信封在客户端新鲜度窗口内仍可能显示。', confirmLabel: '确认撤回' });
+    if (confirmed) await performAction(async () => {
+      await api.patch(`/api/v1/announcements/${encodeURIComponent(id)}/status`, { status: nextStatus });
+      showToast(nextStatus === 'published' ? '公告已发布。' : '公告已撤回为草稿。');
+      await renderCurrentView();
+    });
+  } else if (action === 'delete-announcement') {
+    const confirmed = await confirmAction({ title: '删除公告', message: '删除后不可恢复。公告序号不会回退，删除不会影响后续公告的防回滚校验。', confirmLabel: '确认删除' });
+    if (confirmed) await performAction(async () => {
+      await api.delete(`/api/v1/announcements/${encodeURIComponent(id)}`);
+      showToast('公告已删除。');
       await renderCurrentView();
     });
   } else if (action === 'delete-model-artifact') {
@@ -1184,6 +1312,9 @@ document.addEventListener('change', async (event) => {
     await renderCurrentView();
   } else if (event.target.id === 'model-artifact-app-context') {
     store.patch({ selectedAppId: event.target.value || null, modelArtifactStatus: '', modelArtifacts: [] });
+    await renderCurrentView();
+  } else if (event.target.id === 'announcement-app-context') {
+    store.patch({ selectedAppId: event.target.value || null, announcements: [] });
     await renderCurrentView();
   } else if (event.target.id === 'model-artifact-status-filter') {
     store.patch({ modelArtifactStatus: event.target.value || '' });

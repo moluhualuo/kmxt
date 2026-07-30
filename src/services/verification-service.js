@@ -40,11 +40,14 @@ function appendVerificationLog(state, entry) {
 
 // Author: 花落. The signed authorization contract is provided under the MIT License.
 export class VerificationService {
-  constructor(store, rootSecret, config, securityState) {
+  constructor(store, rootSecret, config, securityState, announcements = null) {
     this.store = store;
     this.rootSecret = rootSecret;
     this.config = config;
     this.replayGuard = new ReplayGuard(config.clockSkewSeconds, securityState);
+    // 花落 / MIT：公告服务可选注入。缺省为 null 时签名载荷仍带 clientPolicy，
+    // 只是 announcements 恒为空数组，便于测试单独构造本服务。
+    this.announcements = announcements;
   }
 
   async activate(input) {
@@ -81,6 +84,7 @@ export class VerificationService {
         sessionToken, issuedAt: now, licenseExpiresAt: activation.licenseExpiresAt, sessionExpiresAt: activation.sessionExpiresAt,
         heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds, offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
         requestNonce: input.nonce,
+        ...await this.#clientContext(appSnapshot, nowMilliseconds),
       });
     }
 
@@ -194,6 +198,7 @@ export class VerificationService {
       heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds,
       offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
       requestNonce: input.nonce,
+      ...await this.#clientContext(appSnapshot, nowMilliseconds),
     });
   }
 
@@ -228,6 +233,7 @@ export class VerificationService {
         issuedAt: now, licenseExpiresAt: verification.licenseExpiresAt, sessionExpiresAt: verification.sessionExpiresAt,
         heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds, offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
         requestNonce: input.nonce,
+        ...await this.#clientContext(appSnapshot, nowMilliseconds),
       });
     }
 
@@ -295,6 +301,7 @@ export class VerificationService {
       heartbeatAfterSeconds: appSnapshot.settings.heartbeatSeconds,
       offlineGraceSeconds: appSnapshot.settings.offlineGraceSeconds,
       requestNonce: input.nonce,
+      ...await this.#clientContext(appSnapshot, nowMilliseconds),
     });
   }
 
@@ -390,6 +397,42 @@ export class VerificationService {
       issuedAt: now,
       requestNonce: input.nonce,
     });
+  }
+
+  /**
+   * 构造随授权信封一起签名下发的版本策略与公告。
+   *
+   * 花落 / MIT：这两块内容搭现有签名载荷的车，因此自动继承 requestNonce 防重放、
+   * 程序独立 Ed25519 签名和 native 强制验签，不新增任何未签名的下发通道。
+   * 全部可选字段显式归一为 null——canonicalJson 遇到 undefined 会抛错，
+   * 历史应用没有这些键，不归一就会让所有心跳验签失败。
+   */
+  async #clientContext(application, nowMilliseconds) {
+    const minVersionCode = Number.isSafeInteger(application.minVersionCode)
+      ? application.minVersionCode
+      : null;
+    const latestVersionCode = Number.isSafeInteger(application.latestVersionCode)
+      ? application.latestVersionCode
+      : null;
+    return {
+      clientPolicy: {
+        minVersionCode,
+        latestVersionCode,
+        latestVersionName: application.latestVersionName ?? null,
+        releaseNotes: application.releaseNotes ?? null,
+      },
+      announcements: await this.#publishableAnnouncements(application.id, nowMilliseconds),
+    };
+  }
+
+  async #publishableAnnouncements(appId, nowMilliseconds) {
+    if (!this.announcements) return [];
+    try {
+      return await this.announcements.listPublishable(appId, nowMilliseconds);
+    } catch {
+      // 公告是纯展示信息，读取失败绝不能连带拖垮授权验证。
+      return [];
+    }
   }
 
   async #getActiveApplication(appId) {

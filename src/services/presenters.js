@@ -42,6 +42,14 @@ export function presentApplication(application) {
       signingCertificates: application.signingCertificates ?? null,
       minVersionCode: application.minVersionCode ?? null,
     },
+    // 花落 / MIT：当前最新版本策略，供后台表单回填与客户端更新提示。
+    // 一律用 ?? null 归一：undefined 进入签名载荷会让 JSON.stringify 产出非法 JSON，
+    // 客户端 native json::parse 会直接失败（见 canonicalJson 的 undefined 防护）。
+    release: {
+      latestVersionCode: application.latestVersionCode ?? null,
+      latestVersionName: application.latestVersionName ?? null,
+      releaseNotes: application.releaseNotes ?? null,
+    },
     createdAt: application.createdAt,
     updatedAt: application.updatedAt,
   };
