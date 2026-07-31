@@ -12,6 +12,7 @@ import {
 import { store } from '../state.js';
 
 // 作者：花落｜MIT
+
 export async function renderAnnouncementsView() {
   const appId = store.value.selectedAppId;
   if (!appId) {
@@ -85,7 +86,7 @@ function renderAnnouncementCard(announcement) {
       <span>${icon('clock')}创建于 ${formatDate(announcement.createdAt)}</span>
     </div>
     ${isDraft ? `<div class="announcement-publish-row">
-      <button class="button small primary" data-action="publish-announcement" data-id="${announcement.id}">
+      <button class="button small primary" data-action="toggle-announcement" data-id="${announcement.id}" data-status="draft">
         ${icon('send')}发布
       </button>
     </div>` : ''}
@@ -104,106 +105,3 @@ function severityLabel(severity) {
   const labels = { info: '提示', warning: '警告', critical: '重要' };
   return labels[severity] || severity;
 }
-
-// ========== EVENT_MARKER_A ==========
-
-store.on('viewMounted:announcements', () => {
-  document.querySelectorAll('[data-action="create-announcement"]').forEach((button) => {
-    button.addEventListener('click', () => openAnnouncementForm());
-  });
-  document.querySelectorAll('[data-action="edit-announcement"]').forEach((button) => {
-    button.addEventListener('click', async (event) => {
-      const announcementId = event.currentTarget.dataset.id;
-      const appId = store.value.selectedAppId;
-      const announcements = await api.get(`/api/v1/apps/${encodeURIComponent(appId)}/announcements`);
-      const announcement = announcements.find((item) => item.id === announcementId);
-      if (announcement) {
-        openAnnouncementForm(announcement);
-      }
-    });
-  });
-  document.querySelectorAll('[data-action="publish-announcement"]').forEach((button) => {
-    button.addEventListener('click', async (event) => {
-      const announcementId = event.currentTarget.dataset.id;
-      try {
-        await api.patch(`/api/v1/announcements/${encodeURIComponent(announcementId)}/status`, { status: 'published' });
-        showToast('公告已发布');
-        store.emit('navigate', 'announcements');
-      } catch (error) {
-        showToast('发布失败：' + error.message, 'error');
-      }
-    });
-  });
-  document.querySelectorAll('[data-action="delete-announcement"]').forEach((button) => {
-    button.addEventListener('click', async (event) => {
-      const announcementId = event.currentTarget.dataset.id;
-      const confirmed = await confirmAction('确认删除此公告？', '删除后客户端将不再收到此公告。');
-      if (!confirmed) return;
-      try {
-        await api.delete(`/api/v1/announcements/${encodeURIComponent(announcementId)}`);
-        showToast('公告已删除');
-        store.emit('navigate', 'announcements');
-      } catch (error) {
-        showToast('删除失败：' + error.message, 'error');
-      }
-    });
-  });
-});
-
-function openAnnouncementForm(existingAnnouncement = null) {
-  const isEdit = !!existingAnnouncement;
-  const fields = [
-    { name: 'title', label: '标题', type: 'text', required: true, value: existingAnnouncement?.title || '', maxlength: 100 },
-    { name: 'body', label: '内容', type: 'textarea', required: true, value: existingAnnouncement?.body || '', maxlength: 2000, rows: 6 },
-    {
-      name: 'severity',
-      label: '级别',
-      type: 'select',
-      required: true,
-      value: existingAnnouncement?.severity || 'info',
-      options: [
-        { value: 'info', label: '提示' },
-        { value: 'warning', label: '警告' },
-        { value: 'critical', label: '重要' },
-      ],
-    },
-    { name: 'startsAt', label: '开始时间（可选）', type: 'datetime-local', value: existingAnnouncement?.startsAt ? toLocalDatetimeValue(existingAnnouncement.startsAt) : '' },
-    { name: 'endsAt', label: '结束时间（可选）', type: 'datetime-local', value: existingAnnouncement?.endsAt ? toLocalDatetimeValue(existingAnnouncement.endsAt) : '' },
-  ];
-
-  openFormDialog({
-    title: isEdit ? '编辑公告' : '创建公告',
-    fields,
-    submitLabel: isEdit ? '保存' : '创建',
-    onSubmit: async (formData) => {
-      const payload = {
-        title: formData.get('title'),
-        body: formData.get('body'),
-        severity: formData.get('severity'),
-        startsAt: formData.get('startsAt') ? new Date(formData.get('startsAt')).toISOString() : null,
-        endsAt: formData.get('endsAt') ? new Date(formData.get('endsAt')).toISOString() : null,
-      };
-      if (isEdit) {
-        await api.patch(`/api/v1/announcements/${encodeURIComponent(existingAnnouncement.id)}`, payload);
-        showToast('公告已更新');
-      } else {
-        const appId = store.value.selectedAppId;
-        await api.post(`/api/v1/apps/${encodeURIComponent(appId)}/announcements`, payload);
-        showToast('公告已创建');
-      }
-      store.emit('navigate', 'announcements');
-    },
-  });
-}
-
-function toLocalDatetimeValue(isoString) {
-  if (!isoString) return '';
-  const date = new Date(isoString);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
-}
-

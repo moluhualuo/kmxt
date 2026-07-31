@@ -1,0 +1,8 @@
+# Author: 花落. MIT License. Ignore generated Android state, not source or prebuilt libraries.
+/.gradle/
+/.kotlin/
+/.idea/
+*.iml
+local.properties
+**/.cxx/
+**/build/
