@@ -385,4 +385,48 @@ export class AuthService {
       return { user: presentUser(user), sessionsRevoked: before - state.adminSessions.length };
     });
   }
+
+  /**
+   * 花落 / MIT：商户账号在 operator 与 merchant_admin 之间改角色。
+   * 枚举与 createMerchantUser 一致，因此商户管理员无法借此造出 platform_admin；
+   * 平台管理员账号没有 merchantId，走不到这里，避免自降权把平台锁死。
+   */
+  async setUserRole(actor, userId, requestedRole) {
+    assertRole(actor, [Roles.PLATFORM_ADMIN, Roles.MERCHANT_ADMIN]);
+    const role = requireEnum(requestedRole, 'role', [Roles.MERCHANT_ADMIN, Roles.OPERATOR]);
+    if (this.store.repositories?.auth) {
+      const result = await this.store.repositories.auth.setUserRole(actor, userId, role);
+      return { ...result, user: presentUser(result.user) };
+    }
+    return this.store.transaction((state) => {
+      const user = state.users.find((item) => item.id === userId && item.merchantId);
+      if (!user) throw new AppError('USER_NOT_FOUND', 'Merchant user was not found', 404);
+      assertMerchantAccess(actor, user.merchantId);
+      if (user.id === actor.id) {
+        throw new AppError('SELF_ROLE_FORBIDDEN', 'You cannot change your own role', 409);
+      }
+      const previousRole = user.role;
+      if (previousRole === role) {
+        return { user: presentUser(user), sessionsRevoked: 0, roleChanged: false };
+      }
+      user.role = role;
+      user.updatedAt = new Date().toISOString();
+      // 角色变更后立即撤销该账号会话，避免旧会话继续按原权限渲染后台。
+      const before = state.adminSessions.length;
+      state.adminSessions = state.adminSessions.filter((session) => session.userId !== user.id);
+      AuditService.append(state, {
+        actor,
+        merchantId: user.merchantId,
+        action: 'merchant_user.role.update',
+        resourceType: 'user',
+        resourceId: user.id,
+        metadata: { from: previousRole, to: role },
+      });
+      return {
+        user: presentUser(user),
+        sessionsRevoked: before - state.adminSessions.length,
+        roleChanged: true,
+      };
+    });
+  }
 }

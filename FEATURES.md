@@ -183,6 +183,27 @@ test_notice_validation();  // 验证 validate_notice_envelope 逻辑
 
 ## 变更日志
 
+### v0.7.2 (2026-07-31)
+
+**新增**：
+- `PATCH /api/v1/users/:userId/role`：平台管理员或所属商户管理员可把商户账号在「操作员」与「商户管理员」之间调整
+- 后台「账号」表格新增盾牌按钮与角色对话框，保存后目标账号会话立即失效
+- 角色枚举与创建账号一致（`operator` / `merchant_admin`），接口无法造出 `platform_admin`
+- 自己不能改自己的角色（`409 SELF_ROLE_FORBIDDEN`），最后一个商户管理员无法自降权
+- 提交相同角色是幂等的：不写库、不撤销会话、不写审计
+- 审计动作 `merchant_user.role.update`，`metadata` 为 `{ from, to }`
+
+### v0.7.1 (2026-07-31)
+
+**修复**：
+- 公告视图改为使用 `views/shared.js` 约定，与其余后台视图一致
+- 公告列表写回 `store.announcements`，修复「编辑公告」按 id 回查为空导致的静默失败
+- `emptyState` 改为传图标名而不是已渲染的 SVG，修复空状态图标回退成 `alert-triangle`
+- 视图不再嵌套 `<main id="main-content">`，避免重复 id
+- 补上 `#announcement-app-context` 程序切换器（`app.js` 早已注册其 change 处理）
+- 写操作按钮按 `isOwner()` 与当前程序渲染，未选程序时显示空状态而不是点击无响应的按钮
+- 公告状态区分「草稿 / 等待生效 / 已过期 / 正在下发」，避免误判客户端未收到
+
 ### v0.7.0 (2026-07-30)
 
 **新增**：

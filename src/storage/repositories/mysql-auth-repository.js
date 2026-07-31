@@ -189,6 +189,26 @@ export class MysqlAuthRepository {
     });
   }
 
+  // Role changes stay inside the operator/merchant_admin pair; the service enum blocks platform_admin.
+  async setUserRole(actor, userId, role) {
+    return this.#transaction(async (connection) => {
+      const [rows] = await connection.execute('SELECT payload, merchant_id, status FROM users WHERE id = ? FOR UPDATE', [userId]);
+      const user = rows[0] ? parseUserRow(rows[0]) : null;
+      if (!user || !rows[0].merchant_id) throw new AppError('USER_NOT_FOUND', 'Merchant user was not found', 404);
+      assertMerchantAccess(actor, user.merchantId);
+      if (user.id === actor.id) throw new AppError('SELF_ROLE_FORBIDDEN', 'You cannot change your own role', 409);
+      const previousRole = user.role;
+      if (previousRole === role) return { user, sessionsRevoked: 0, roleChanged: false };
+      const now = new Date().toISOString();
+      user.role = role;
+      user.updatedAt = now;
+      await connection.execute('UPDATE users SET role = ?, payload = ? WHERE id = ?', [user.role, JSON.stringify(user), user.id]);
+      const [result] = await connection.execute('DELETE FROM admin_sessions WHERE user_id = ?', [user.id]);
+      await this.#audit(connection, actor, user.merchantId, 'merchant_user.role.update', 'user', user.id, { from: previousRole, to: role }, now);
+      return { user, sessionsRevoked: Number(result.affectedRows ?? 0), roleChanged: true };
+    });
+  }
+
   async #requireActiveMerchant(connection, merchantId) {
     const [rows] = await connection.execute('SELECT status FROM merchants WHERE id = ? FOR UPDATE', [merchantId]);
     if (!rows[0]) throw new AppError('MERCHANT_NOT_FOUND', 'Merchant was not found', 404);

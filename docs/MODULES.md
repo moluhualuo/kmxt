@@ -1,6 +1,6 @@
 # 模块说明
 
-本文对应 KMXT `0.7.0`。作者花落，项目按 MIT 协议发布。
+本文对应 KMXT `0.7.2`。作者花落，项目按 MIT 协议发布。
 
 ## 架构与依赖方向
 
@@ -52,7 +52,7 @@ HTTP 层只负责协议、认证入口和参数转发；业务判断集中在服
 | `src/storage/repositories/mysql-order-repository.js` | MySQL 公开下单、订单查询、拒单与审核发卡；写操作锁定相关资源，审核时使用 `source_id` 唯一约束保护幂等性。 |
 | `src/storage/repositories/mysql-verification-repository.js` | MySQL 激活、心跳与客户端主动解绑；锁定程序、商户、卡密、绑定和会话的相关行，原子处理设备上限、会话续期及自助解绑释放名额。 |
 | `src/storage/repositories/mysql-license-repository.js` | MySQL 卡密批量生成、查询、批次、设备绑定、完整卡密查看和删除；批量发卡写入摘要与加密密文，敏感查看和删除均在资源锁定事务中写审计，删除会清理会话、验证记录和设备绑定。 |
-| `src/storage/repositories/mysql-auth-repository.js` | MySQL 管理员账号与会话查询；登录、账号创建、改密、重置密码和账号停用在定向事务中锁定用户并撤销对应管理会话。 |
+| `src/storage/repositories/mysql-auth-repository.js` | MySQL 管理员账号与会话查询；登录、账号创建、改密、重置密码、角色调整和账号停用在定向事务中锁定用户并撤销对应管理会话。 |
 | `src/storage/repositories/mysql-merchant-repository.js` | MySQL 商户创建、资料和状态管理；停用商户时在同一事务中撤销所属管理会话和客户端会话。 |
 | `src/storage/repositories/mysql-application-repository.js` | MySQL 程序创建、设置、公开配置和状态管理；停用程序时锁定资源并撤销客户端会话，不轮换签名密钥。 |
 | `src/storage/repositories/mysql-product-repository.js` | MySQL 商品创建、编辑、启停、列表和公开店铺读取；店铺查询只返回启用商户、程序和商品。 |
@@ -101,7 +101,7 @@ HTTP 层只负责协议、认证入口和参数转发；业务判断集中在服
 | `src/services/access-control.js` | 角色定义、租户访问断言，以及商户、程序、卡密和绑定查找。 |
 | `src/services/presenters.js` | 将内部记录转换为安全输出，去除密码、摘要和加密私钥。 |
 | `src/services/audit-service.js` | 在业务事务内写入审计记录，按商户查询审计，按程序查询验证日志。 |
-| `src/services/auth-service.js` | 创建首个平台管理员、登录、会话校验、退出、自助改密、商户账号密码重置、账号启停及会话撤销；MySQL 模式委托账号领域 Repository，JSON 模式保留同一契约。 |
+| `src/services/auth-service.js` | 创建首个平台管理员、登录、会话校验、退出、自助改密、商户账号密码重置、账号启停、商户账号角色调整（仅 `operator` 与 `merchant_admin`）及会话撤销；MySQL 模式委托账号领域 Repository，JSON 模式保留同一契约。 |
 | `src/services/merchant-service.js` | 平台创建、查询、启用和禁用商户。MySQL 模式用定向事务禁用商户并撤销其所有会话。 |
 | `src/services/application-service.js` | 创建及管理程序；为每个程序生成独立 Ed25519 密钥，并提供公开客户端配置。MySQL 模式以定向事务更新设置或停用程序，不轮换密钥。 |
 | `src/services/client-integrity.js` | 规范化 Android 客户端完整性声明，校验包名、签名证书摘要、安装来源和可选 Play Integrity 字段，并为验证服务提供失败关闭的统一结果。 |
@@ -151,7 +151,7 @@ HTTP 层只负责协议、认证入口和参数转发；业务判断集中在服
 | `public/js/views/online-devices.js` | 在线设备统计、程序/状态/关键词筛选、分页和强制下线入口；显示卡密遮罩、版本、可信来源 IP 与最后心跳。 |
 | `public/js/views/products.js` | 商品列表、状态和公开店铺入口。 |
 | `public/js/views/orders.js` | 订单状态、编号、时间筛选和人工发卡入口。 |
-| `public/js/views/users.js` | 商户账号、密码重置和启停入口。 |
+| `public/js/views/users.js` | 商户账号、角色调整、密码重置和启停入口。 |
 | `public/js/views/logs.js` | 审计/验证日志模式、事件和时间筛选入口。 |
 | `public/store.html` | `/store/:merchantCode` 用户店铺入口。 |
 | `public/store.css` | 套餐、订单提交、查询和卡密交付的响应式样式。 |

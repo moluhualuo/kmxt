@@ -1,7 +1,7 @@
 # API 文档
 
 版本：`v1`  
-服务版本：`0.7.0`
+服务版本：`0.7.2`
 作者：花落  
 协议：MIT
 
@@ -92,7 +92,7 @@ Authorization: Bearer <admin-token>
   "data": {
     "status": "ok",
     "service": "kmxt-license-server",
-    "version": "0.7.0",
+    "version": "0.7.2",
     "time": "2026-07-13T08:00:00.000Z"
   },
   "requestId": "..."
@@ -240,6 +240,26 @@ Authorization: Bearer <admin-token>
 ```
 
 新密码长度为 10 到 128，且不能与目标账号原密码相同。成功后立即撤销目标账号的全部管理会话，并写入 `merchant_user.password.reset` 审计记录。
+
+### `PATCH /api/v1/users/:userId/role`
+
+平台管理员或目标账号所属商户的商户管理员。只能调整商户账号在 `operator` 与 `merchant_admin` 之间的角色，与 `POST /api/v1/merchants/:merchantId/users` 使用同一枚举，因此不能借该接口造出 `platform_admin`；平台管理员账号没有 `merchantId`，返回 `404 USER_NOT_FOUND`。
+
+```json
+{
+  "role": "merchant_admin"
+}
+```
+
+不能修改自己的角色，否则返回 `409 SELF_ROLE_FORBIDDEN`，避免最后一个商户管理员自降权后该商户无人可写。角色确实发生变化时立即撤销目标账号的全部管理会话并写入 `merchant_user.role.update` 审计记录（`metadata` 为 `{ from, to }`）；提交与当前角色相同的值是幂等的，不撤销会话也不写审计。
+
+```json
+{
+  "user": { "id": "...", "role": "merchant_admin", "status": "active" },
+  "sessionsRevoked": 1,
+  "roleChanged": true
+}
+```
 
 ## 程序管理
 

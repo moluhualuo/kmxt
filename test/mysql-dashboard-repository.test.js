@@ -264,6 +264,52 @@ test('MySQL auth repository locks a user and revokes all admin sessions when it 
   assert.ok(calls.some((call) => /UPDATE users SET status = \?, payload = \? WHERE id = \?/.test(call.sql)));
 });
 
+// 花落 / MIT：角色变更必须同时改 role 列与 payload，并撤销该账号全部管理会话。
+test('MySQL auth repository updates the role column and revokes sessions when the role changes', async () => {
+  const calls = [];
+  const user = {
+    id: 'user-1', merchantId: 'merchant-1', username: 'operator', usernameNormalized: 'operator', displayName: 'Operator',
+    passwordHash: 'scrypt$invalid$invalid', role: 'operator', status: 'active', createdAt: '2026-07-15T00:00:00.000Z', updatedAt: '2026-07-15T00:00:00.000Z', lastLoginAt: null,
+  };
+  const connection = {
+    async beginTransaction() {}, async commit() {}, async rollback() {}, release() {},
+    async execute(sql, values) {
+      calls.push({ sql, values });
+      if (sql.startsWith('SELECT payload, merchant_id, status FROM users')) {
+        return [[{ payload: JSON.stringify(user), merchant_id: 'merchant-1', status: 'active' }]];
+      }
+      if (sql.startsWith('DELETE FROM admin_sessions')) return [{ affectedRows: 3 }];
+      return [[]];
+    },
+  };
+  const repository = new MysqlAuthRepository({ async getConnection() { return connection; } });
+  const actor = { id: 'owner-1', username: 'owner', role: 'merchant_admin', merchantId: 'merchant-1' };
+  const promoted = await repository.setUserRole(actor, user.id, 'merchant_admin');
+  assert.equal(promoted.user.role, 'merchant_admin');
+  assert.equal(promoted.roleChanged, true);
+  assert.equal(promoted.sessionsRevoked, 3);
+  assert.ok(calls.some((call) => call.sql === 'SELECT payload, merchant_id, status FROM users WHERE id = ? FOR UPDATE'));
+  assert.ok(calls.some((call) => call.sql === 'UPDATE users SET role = ?, payload = ? WHERE id = ?'));
+  assert.ok(calls.some((call) => call.sql === 'DELETE FROM admin_sessions WHERE user_id = ?'));
+  const auditPayloads = calls.filter((call) => /INSERT INTO audit_logs/.test(call.sql)).map((call) => call.values[5]);
+  assert.equal(auditPayloads.some((payload) => payload.includes('merchant_user.role.update')), true);
+  assert.equal(auditPayloads.some((payload) => payload.includes('"from":"operator"')), true);
+
+  await assert.rejects(
+    () => repository.setUserRole({ id: 'owner-2', username: 'other', role: 'merchant_admin', merchantId: 'merchant-2' }, user.id, 'operator'),
+    (error) => error.code === 'FORBIDDEN',
+  );
+  await assert.rejects(
+    () => repository.setUserRole({ id: user.id, username: 'operator', role: 'merchant_admin', merchantId: 'merchant-1' }, user.id, 'operator'),
+    (error) => error.code === 'SELF_ROLE_FORBIDDEN',
+  );
+  const writesBefore = calls.filter((call) => /^UPDATE users SET role/.test(call.sql)).length;
+  const unchanged = await repository.setUserRole(actor, user.id, user.role);
+  assert.equal(unchanged.roleChanged, false);
+  assert.equal(unchanged.sessionsRevoked, 0);
+  assert.equal(calls.filter((call) => /^UPDATE users SET role/.test(call.sql)).length, writesBefore);
+});
+
 test('MySQL login locks the merchant before the administrator account', async () => {
   const calls = [];
   const user = { id: 'user-1', merchantId: 'merchant-1', username: 'owner', usernameNormalized: 'owner', displayName: 'Owner', passwordHash: 'hash', role: 'merchant_admin', status: 'active', createdAt: '2026-07-15T00:00:00.000Z', updatedAt: '2026-07-15T00:00:00.000Z', lastLoginAt: null };

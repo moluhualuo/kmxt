@@ -19,7 +19,7 @@ export function registerRoutes(router, services) {
   router.add('GET', '/health', { rateLimit: ADMIN_LIMIT }, async () => ({
     status: 'ok',
     service: 'kmxt-license-server',
-    version: '0.7.0',
+    version: '0.7.2',
     time: new Date().toISOString(),
   }));
   router.add('GET', '/ready', { rateLimit: ADMIN_LIMIT }, async () => ({ status: 'ready', checks: await services.readiness.check() }));
@@ -87,6 +87,8 @@ export function registerRoutes(router, services) {
     requireObject(body),
   ));
   router.add('PATCH', '/api/v1/users/:userId/status', { auth: true, roles: OWNER_ROLES, rateLimit: ADMIN_LIMIT }, async ({ user, params, body }) => services.auth.setUserStatus(user, params.userId, requireObject(body).status));
+  // 角色只能在 operator 与 merchant_admin 之间调整，因此写权限与创建账号保持一致。
+  router.add('PATCH', '/api/v1/users/:userId/role', { auth: true, roles: OWNER_ROLES, rateLimit: ADMIN_LIMIT }, async ({ user, params, body }) => services.auth.setUserRole(user, params.userId, requireObject(body).role));
 
   router.add('GET', '/api/v1/merchants/:merchantId/apps', {
     auth: true,

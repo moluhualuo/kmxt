@@ -168,6 +168,59 @@ test('multi-tenant license activation and verification workflow', async (context
     body: { username: 'merchant.a.operator', password: 'Merchant-A-Operator-Password!' },
   });
   assert.equal(operatorLogin.status, 200);
+
+  // 花落 / MIT：商户管理员可在 operator 与 merchant_admin 之间调整角色，调整后旧会话立即失效。
+  const promoteOperator = await request(baseUrl, 'PATCH', `/api/v1/users/${createOperator.payload.data.id}/role`, {
+    token: merchantToken,
+    body: { role: 'merchant_admin' },
+  });
+  assert.equal(promoteOperator.status, 200);
+  assert.equal(promoteOperator.payload.data.user.role, 'merchant_admin');
+  assert.equal(promoteOperator.payload.data.roleChanged, true);
+  assert.equal(promoteOperator.payload.data.sessionsRevoked, 1);
+  const promotedStaleSession = await request(baseUrl, 'GET', '/api/v1/auth/me', {
+    token: operatorLogin.payload.data.token,
+  });
+  assert.equal(promotedStaleSession.status, 401);
+  // 角色接口不能造出 platform_admin。
+  const escalationDenied = await request(baseUrl, 'PATCH', `/api/v1/users/${createOperator.payload.data.id}/role`, {
+    token: platformToken,
+    body: { role: 'platform_admin' },
+  });
+  assert.equal(escalationDenied.status, 400);
+  assert.equal(escalationDenied.payload.error.code, 'INVALID_INPUT');
+  // 不能改自己的角色，避免最后一个商户管理员自降权后无人可写。
+  const selfRoleDenied = await request(baseUrl, 'PATCH', `/api/v1/users/${createAdminA.payload.data.id}/role`, {
+    token: merchantToken,
+    body: { role: 'operator' },
+  });
+  assert.equal(selfRoleDenied.status, 409);
+  assert.equal(selfRoleDenied.payload.error.code, 'SELF_ROLE_FORBIDDEN');
+  const crossTenantRole = await request(baseUrl, 'PATCH', `/api/v1/users/${createAdminB.payload.data.id}/role`, {
+    token: merchantToken,
+    body: { role: 'operator' },
+  });
+  assert.equal(crossTenantRole.status, 403);
+  assert.equal(crossTenantRole.payload.error.code, 'FORBIDDEN');
+  const demoteOperator = await request(baseUrl, 'PATCH', `/api/v1/users/${createOperator.payload.data.id}/role`, {
+    token: merchantToken,
+    body: { role: 'operator' },
+  });
+  assert.equal(demoteOperator.status, 200);
+  assert.equal(demoteOperator.payload.data.user.role, 'operator');
+  const repeatDemote = await request(baseUrl, 'PATCH', `/api/v1/users/${createOperator.payload.data.id}/role`, {
+    token: merchantToken,
+    body: { role: 'operator' },
+  });
+  assert.equal(repeatDemote.status, 200);
+  assert.equal(repeatDemote.payload.data.roleChanged, false);
+  assert.equal(repeatDemote.payload.data.sessionsRevoked, 0);
+  const operatorSecondLogin = await request(baseUrl, 'POST', '/api/v1/auth/login', {
+    body: { username: 'merchant.a.operator', password: 'Merchant-A-Operator-Password!' },
+  });
+  assert.equal(operatorSecondLogin.status, 200);
+  assert.equal(operatorSecondLogin.payload.data.user.role, 'operator');
+
   const disableOperator = await request(baseUrl, 'PATCH', `/api/v1/users/${createOperator.payload.data.id}/status`, {
     token: merchantToken,
     body: { status: 'disabled' },
@@ -176,7 +229,7 @@ test('multi-tenant license activation and verification workflow', async (context
   assert.equal(disableOperator.payload.data.user.status, 'disabled');
   assert.equal(disableOperator.payload.data.sessionsRevoked, 1);
   const disabledOperatorSession = await request(baseUrl, 'GET', '/api/v1/auth/me', {
-    token: operatorLogin.payload.data.token,
+    token: operatorSecondLogin.payload.data.token,
   });
   assert.equal(disabledOperatorSession.status, 401);
 

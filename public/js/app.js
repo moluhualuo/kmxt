@@ -432,6 +432,37 @@ function openChangePassword() {
   });
 }
 
+function openChangeUserRole(userId, username, currentRole) {
+  // 花落 / MIT：角色只在操作员与商户管理员之间调整，平台管理员账号不出现在商户账号列表里。
+  const options = [
+    { value: 'operator', label: '操作员（只读）' },
+    { value: 'merchant_admin', label: '商户管理员（可写）' },
+  ];
+  openFormDialog({
+    title: `修改 ${username} 的角色`,
+    submitLabel: '保存角色',
+    content: `<div class="form-stack">
+      <div class="field"><label for="user-role-select">角色</label><select class="select" id="user-role-select" name="role" autofocus>
+        ${options.map((item) => `<option value="${item.value}" ${item.value === currentRole ? 'selected' : ''}>${item.label}</option>`).join('')}
+      </select><span class="field-hint">商户管理员可发卡、改程序设置与发布公告；操作员只能查看。保存后该账号的登录会话会立即失效，需要重新登录。</span></div>
+    </div>`,
+    onSubmit: async (form) => {
+      const role = form.get('role');
+      if (role === currentRole) {
+        throw new Error('角色未变化。');
+      }
+      let result;
+      try {
+        result = await api.patch(`/api/v1/users/${encodeURIComponent(userId)}/role`, { role });
+      } catch (error) {
+        throw new Error(friendlyError(error));
+      }
+      showToast(`${username} 已设为${roleLabel(result.user.role)}，已撤销 ${result.sessionsRevoked} 个会话。`);
+      await renderCurrentView();
+    },
+  });
+}
+
 function openResetUserPassword(userId, username) {
   openFormDialog({
     title: `重置 ${username} 的密码`,
@@ -919,7 +950,7 @@ document.addEventListener('click', async (event) => {
   }
   const button = event.target.closest('[data-action]');
   if (!button) return;
-  const { action, id, status, mode, licenseId, username } = button.dataset;
+  const { action, id, status, mode, licenseId, username, role } = button.dataset;
 
   if (action === 'toggle-sidebar') {
     store.patch({ sidebarOpen: !store.value.sidebarOpen });
@@ -943,6 +974,8 @@ document.addEventListener('click', async (event) => {
     openChangePassword();
   } else if (action === 'reset-user-password') {
     openResetUserPassword(id, username);
+  } else if (action === 'change-user-role') {
+    openChangeUserRole(id, username, role);
   } else if (action === 'toggle-user') {
     const nextStatus = status === 'active' ? 'disabled' : 'active';
     const confirmed = nextStatus === 'active' || await confirmAction({ title: '停用账号', message: '该账号的全部管理会话将立即失效。', confirmLabel: '确认停用' });
