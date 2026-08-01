@@ -979,7 +979,7 @@ DEK 和短期租约；大型模型优先使用本地发布 CLI，避免浏览器
 
 | 表单字段 | 必填 | 约束与用途 |
 | --- | --- | --- |
-| `file` | 是 | 明文模型文件；后台支持 `.onnx`、`.param`、`.bin`、`.tflite` 和 `.dlc`。 |
+| `file` | 是 | 明文制品文件；后台支持 `.onnx`、`.param`、`.bin`、`.tflite`、`.dlc`、`.so` 和 `.dex`。 |
 | `appId` | 是 | 当前程序 UUID；商户范围仍由 Bearer 会话校验。 |
 | `name` | 否 | 制品名；省略时从文件名去除扩展名推断。 |
 | `version` | 否 | 版本号，默认 `1.0`。 |
@@ -1045,7 +1045,7 @@ Base64URL DEK，服务收到后立即用 `artifact-dek:<artifactId>` 用途标�
 | --- | --- | --- |
 | `name` | 是 | 制品名称，1–128 个字符。 |
 | `version` | 是 | 程序内的发布版本，1–64 个字符；与 `name` 组合唯一。 |
-| `format` | 是 | `onnx`、`ncnn-param`、`ncnn-bin`、`tflite`、`dlc` 或 `bundle`。 |
+| `format` | 是 | `onnx`、`ncnn-param`、`ncnn-bin`、`tflite`、`dlc`、`bundle`、`so` 或 `dex`。 |
 | `edition` | 否 | 可选版本分支，1–32 个字符。 |
 | `cipherSha256` | 是 | 密文文件的 64 位小写十六进制 SHA-256。 |
 | `size` | 是 | 密文字节数，不超过 `KMXT_MODEL_ARTIFACT_MAX_BYTES`。 |
@@ -1057,8 +1057,8 @@ Base64URL DEK，服务收到后立即用 `artifact-dek:<artifactId>` 用途标�
 | `contentKey` | 是 | 仅登记请求使用的 32 字节 Base64URL DEK；页面提交后不回显。 |
 | `keyVersion` | 否 | 1–1000000 的正整数，默认为 `1`。 |
 
-`format` 支持 `onnx`、`ncnn-param`、`ncnn-bin`、`tflite`、`dlc`
-和 `bundle`；`size` 受
+`format` 支持 `onnx`、`ncnn-param`、`ncnn-bin`、`tflite`、`dlc`、`bundle`、`so`
+和 `dex`；`size` 受
 `KMXT_MODEL_ARTIFACT_MAX_BYTES` 限制。同一程序、名称和版本不可重复。
 `encryption.nonce` 和 `encryption.tag` 必填，必须是不带填充的规范
 Base64URL，解码后分别为 12 字节和 16 字节。`chunkSize` 在整文件

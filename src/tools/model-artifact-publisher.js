@@ -9,7 +9,8 @@ const KEY_BYTES = 32;
 const TAG_BYTES = 16;
 const DEFAULT_HIGH_WATER_MARK = 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
-const ARTIFACT_FORMATS = new Set(['onnx', 'ncnn-param', 'ncnn-bin', 'tflite', 'dlc', 'bundle']);
+// 花落/MIT: 'so' / 'dex' 走与模型相同的整文件 AES-256-GCM + 租约 DEK 下发链路。
+const ARTIFACT_FORMATS = new Set(['onnx', 'ncnn-param', 'ncnn-bin', 'tflite', 'dlc', 'bundle', 'so', 'dex']);
 
 function invalid(message) {
   const error = new TypeError(message);

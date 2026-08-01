@@ -710,13 +710,13 @@ function openUploadModelArtifact() {
   const application = store.application;
   if (!application || !isOwner()) return;
   openFormDialog({
-    title: '上传并加密模型',
+    title: '上传并加密制品',
     submitLabel: '开始上传',
     wide: true,
     content: `<div class="form-stack">
-      <p class="field-hint">可一次选择多个明文模型文件批量上传，服务端逐个加密并生成下载密文。名称/格式/大小自动从每个文件推断，内容密钥 DEK 仅服务端保存。</p>
+      <p class="field-hint">可一次选择多个明文文件批量上传，服务端逐个加密并生成下载密文。支持模型（.onnx/.param/.bin/.tflite/.dlc）、原生库（.so）与代码（.dex）；名称/格式/大小自动从每个文件推断，内容密钥 DEK 仅服务端保存。</p>
       <div class="form-grid">
-        <div class="field full"><label for="upload-file">模型文件（明文，可多选）</label><input type="file" class="input" id="upload-file" name="file" accept=".onnx,.param,.bin,.tflite,.dlc" multiple required autofocus></div>
+        <div class="field full"><label for="upload-file">制品文件（明文，可多选）</label><input type="file" class="input" id="upload-file" name="file" accept=".onnx,.param,.bin,.tflite,.dlc,.so,.dex" multiple required autofocus></div>
         <div class="field"><label for="upload-version">版本（可选，默认 1.0）</label><input class="input mono" id="upload-version" name="version" minlength="1" maxlength="64" placeholder="1.0"></div>
         <div class="field"><label for="upload-edition">版本分层（可选）</label><input class="input" id="upload-edition" name="edition" maxlength="32" placeholder="例如 paid"></div>
         <div class="field"><label for="upload-key-version">密钥版本</label><input class="input" id="upload-key-version" name="keyVersion" type="number" min="1" max="1000000" step="1" value="1" required></div>

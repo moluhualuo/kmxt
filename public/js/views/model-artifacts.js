@@ -23,6 +23,8 @@ const FORMAT_LABELS = Object.freeze({
   tflite: 'TensorFlow Lite',
   dlc: 'DLC',
   bundle: '文件包',
+  so: 'Native .so',
+  dex: 'DEX',
 });
 
 function formatArtifactSize(value) {

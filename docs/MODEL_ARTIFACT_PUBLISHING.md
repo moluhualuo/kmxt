@@ -69,7 +69,7 @@ node cli/publish-model-artifact.js `
 
 支持的 `--format`：
 
-| 模型文件 | `--format` |
+| 文件 | `--format` |
 | --- | --- |
 | ONNX | `onnx` |
 | ncnn 参数 | `ncnn-param` |
@@ -77,6 +77,13 @@ node cli/publish-model-artifact.js `
 | TensorFlow Lite | `tflite` |
 | Qualcomm DLC | `dlc` |
 | 自定义不可拆包组合 | `bundle` |
+| 原生库（Android `.so`） | `so` |
+| Dalvik 字节码（`.dex`） | `dex` |
+
+`so` / `dex` 与模型走完全相同的整文件 AES-256-GCM 加密与租约 DEK 下发协议：
+密文 `.vmp` 随 APK `assets` 打包，服务端不托管密文，运行期客户端凭租约拿 DEK
+解密本地密文。`.so`/`.dex` 只是把"被保护的资产"从模型换成原生库或代码，密文
+格式、DEK 生命周期与 `cipherSha256` 校验语义不变。
 
 ncnn 的 `.param` 与 `.bin` 应分别发布为两个 artifact，使用不同 DEK。客户端映射
 也应引用两个独立 artifact ID，避免一个文件泄露后扩大影响范围。

@@ -35,7 +35,7 @@ Usage:
     --input <model.onnx> \\
     --output <model.onnx.enc> \\
     --version <version> \\
-    --format <onnx|ncnn-param|ncnn-bin|tflite|dlc|bundle> \\
+    --format <onnx|ncnn-param|ncnn-bin|tflite|dlc|bundle|so|dex> \\
     [--name <artifact-name>] [--edition <edition>] [--key-version <number>] \\
     [--manifest <manifest.json>] [--token-file <admin-token-file>] [--overwrite]
 
