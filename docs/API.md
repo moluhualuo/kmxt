@@ -1,7 +1,7 @@
 # API 文档
 
 版本：`v1`  
-服务版本：`0.7.2`
+服务版本：`0.7.3`
 作者：花落  
 协议：MIT
 
@@ -92,7 +92,7 @@ Authorization: Bearer <admin-token>
   "data": {
     "status": "ok",
     "service": "kmxt-license-server",
-    "version": "0.7.2",
+    "version": "0.7.3",
     "time": "2026-07-13T08:00:00.000Z"
   },
   "requestId": "..."
@@ -777,6 +777,16 @@ Authorization: Bearer <admin-token>
 
 两条通道的公告和版本策略均由程序 Ed25519 私钥签名，客户端必须验证签名和 `appId` 后使用。公告载荷包含单调递增序号，客户端必须持久化已见最大序号并拒绝回滚。
 
+每条公告有一个 `placement`（投放位置）字段决定它进入哪条通道，因此「只在软件内展示、不在卡密验证页展示」这类需求完全由服务端过滤实现，客户端无需改动：
+
+| `placement` | 含义 | 通道 A（软件内） | 通道 B（卡密验证页） |
+| --- | --- | --- | --- |
+| `both`（缺省） | 全部页面 | 下发 | 下发 |
+| `gate` | 仅验证页 | 不下发 | 下发 |
+| `app` | 仅软件内 | 下发 | 不下发 |
+
+`placement` 与 `status`、时间窗口是三层相互独立的过滤条件，且过滤在条数上限（每条通道最多 3 条）之前执行，因此一条通道的公告不会挤占另一条通道的名额。历史公告的记录里没有这个键，读取时统一按 `both` 解释，升级服务端不会让任何已发布公告从某个页面消失。`placement` 是服务端投放开关，**不会**出现在下发给客户端的签名载荷里。
+
 ### 管理接口
 
 #### `GET /api/v1/apps/:appId/announcements`
@@ -795,6 +805,7 @@ Authorization: Bearer <admin-token>
       "sequence": 3,
       "status": "published",
       "severity": "warning",
+      "placement": "both",
       "title": "重要更新提醒",
       "body": "我们发现了一个影响性能的问题，请尽快更新到最新版本。",
       "startsAt": "2026-07-25T00:00:00.000Z",
@@ -818,6 +829,7 @@ Authorization: Bearer <admin-token>
   "title": "维护通知",
   "body": "系统将于今晚22:00进行例行维护，预计持续2小时。",
   "severity": "info",
+  "placement": "app",
   "startsAt": "2026-07-30T22:00:00.000Z",
   "endsAt": "2026-07-31T02:00:00.000Z"
 }
@@ -826,19 +838,21 @@ Authorization: Bearer <admin-token>
 - `title`：必填，2-200 字符，纯文本（拒绝 `<>` 和 JavaScript URI）
 - `body`：必填，10-2000 字符，纯文本，最多 20 行
 - `severity`：必填，枚举 `info`、`warning`、`critical`
+- `placement`：可选，枚举 `both`（缺省）、`gate`、`app`，决定公告进入哪条下发通道
 - `startsAt`/`endsAt`：可选，ISO 8601 时间戳，用于时间窗口过滤；`endsAt` 必须晚于 `startsAt`
 
 响应返回完整公告对象（201 Created）。
 
 #### `PATCH /api/v1/announcements/:announcementId`
 
-需要 `platform_admin` 或程序所属商户的 `merchant_admin`。更新公告内容和时间窗口（不能修改 `sequence` 和 `status`）。
+需要 `platform_admin` 或程序所属商户的 `merchant_admin`。更新公告内容、投放位置和时间窗口（不能修改 `sequence` 和 `status`）。
 
 请求体示例：
 
 ```json
 {
   "title": "维护通知（已延期）",
+  "placement": "app",
   "endsAt": "2026-07-31T04:00:00.000Z"
 }
 ```
@@ -917,8 +931,9 @@ Authorization: Bearer <admin-token>
 **公告列表**：
 
 - 只返回 `status === 'published'` 且在时间窗口内的公告（当前时间在 `startsAt` 和 `endsAt` 之间，缺失时视为无限制）
+- 只返回 `placement` 为 `both` 或 `gate` 的公告；`placement === 'app'` 的公告不进这条通道
 - 按 `sequence` 倒序排列，最多返回 3 条
-- `sequence` 为程序级全局计数器，单调递增，删除公告不回退
+- 载荷里的 `payload.sequence` 取程序级 `announcementSequence` 计数器（只随创建递增），**不是**本次下发公告的最大序号。撤回发布、公告过期、删除、或把 `placement` 改成 `app` 都会让下发集合缩小，若用集合最大序号，客户端的防回滚检查会把一次合法的管理操作当成降级攻击并整封拒收
 
 **客户端验证要求**：
 
@@ -942,6 +957,8 @@ Authorization: Bearer <admin-token>
 ### 通道 A：授权响应中的公告
 
 `activate` 和 `verify` 的成功响应载荷自动包含相同的 `clientPolicy` 和 `announcements` 字段，无需单独请求。客户端应优先使用授权响应中的公告（更及时），仅在未激活状态时回退到通道 B。
+
+这条通道只包含 `placement` 为 `both` 或 `app` 的公告；`placement === 'gate'` 的公告是卡密验证页专属，不会出现在授权响应里。两条通道各自独立应用 3 条上限。
 
 ## 常见错误代码
 

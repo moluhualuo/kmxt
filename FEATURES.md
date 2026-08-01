@@ -183,6 +183,24 @@ test_notice_validation();  // 验证 validate_notice_envelope 逻辑
 
 ## 变更日志
 
+### v0.7.3 (2026-08-01)
+
+**新增**：
+- 公告新增 `placement`（展示位置）字段：`both`（全部页面，缺省）/ `gate`（仅卡密验证页）/ `app`（仅软件内）
+- 两条下发通道按 `placement` 各自过滤：通道 A（`activate`/`verify` 签名载荷）只取 `both`/`app`，通道 B（`/client/apps/:appId/notices`）只取 `both`/`gate`
+- 后台公告表单新增「展示位置」下拉，列表卡片新增投放位置胶囊（钥匙 / 手机 / 立方体图标）
+- `POST` 与 `PATCH` 公告接口接受 `placement`，非法取值返回 `400 INVALID_INPUT`
+
+**修复**：
+- 通道 B 载荷的 `sequence` 改为取程序级 `announcementSequence` 计数器，不再取本次下发公告的最大序号。撤回发布、公告过期、删除、或把 `placement` 改成 `app` 都会让下发集合缩小，旧实现会让 `sequence` 回落并触发客户端 native 的 `NOTICE_ROLLBACK`，把公告与版本策略一起永久打死
+
+**兼容性**：
+- 历史公告的记录里没有 `placement` 键，读取侧一律按 `both` 解释，升级不会让任何已发布公告从某个页面消失
+- 过滤在 3 条上限之前执行，一条通道的公告不会挤占另一条通道的名额
+- `placement` 不进签名载荷，客户端 / SDK / native 与 SQL schema 均无需改动（MySQL 以 JSON `payload` 存整条记录）
+
+**测试**：新增 8 个 placement 用例 + 1 个防回滚水位用例，`test/announcements.test.js` 共 19 项全通过
+
 ### v0.7.2 (2026-07-31)
 
 **新增**：

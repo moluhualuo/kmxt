@@ -613,6 +613,9 @@ function openAnnouncementForm(announcement = null) {
     return date.toISOString().slice(0, 16);
   };
   const severity = announcement?.severity || 'info';
+  const placement = ['both', 'gate', 'app'].includes(announcement?.placement)
+    ? announcement.placement
+    : 'both';
   openFormDialog({
     title: announcement ? '编辑公告' : '新建公告',
     submitLabel: announcement ? '保存公告' : '创建公告',
@@ -625,6 +628,11 @@ function openAnnouncementForm(announcement = null) {
         <option value="warning" ${severity === 'warning' ? 'selected' : ''}>提醒</option>
         <option value="critical" ${severity === 'critical' ? 'selected' : ''}>重要</option>
       </select></div>
+      <div class="field"><label for="announcement-placement">展示位置</label><select class="select" id="announcement-placement" name="placement">
+        <option value="both" ${placement === 'both' ? 'selected' : ''}>全部页面</option>
+        <option value="gate" ${placement === 'gate' ? 'selected' : ''}>仅卡密验证页</option>
+        <option value="app" ${placement === 'app' ? 'selected' : ''}>仅软件内</option>
+      </select><span class="field-hint">「仅软件内」的公告不会出现在验证页，用户激活进入软件后才看到。</span></div>
       <div class="field"><label for="announcement-starts">生效时间（可空）</label><input class="input" id="announcement-starts" name="startsAt" type="datetime-local" value="${escapeHtml(toLocalInput(announcement?.startsAt))}"><span class="field-hint">留空表示立即生效。</span></div>
       <div class="field"><label for="announcement-ends">结束时间（可空）</label><input class="input" id="announcement-ends" name="endsAt" type="datetime-local" value="${escapeHtml(toLocalInput(announcement?.endsAt))}"><span class="field-hint">留空表示长期有效，必须晚于生效时间。</span></div>
     </div>`,
@@ -640,6 +648,7 @@ function openAnnouncementForm(announcement = null) {
         title: form.get('title'),
         body: form.get('body'),
         severity: form.get('severity'),
+        placement: form.get('placement'),
         startsAt: toIso('startsAt'),
         endsAt: toIso('endsAt'),
       };

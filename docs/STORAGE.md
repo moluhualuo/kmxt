@@ -1,6 +1,6 @@
 # MySQL 与 Redis 存储
 
-作者：花落；协议：MIT。本文对应 KMXT 0.7.2。
+作者：花落；协议：MIT。本文对应 KMXT 0.7.3。
 
 MySQL 的旧 `StateStore` 兼容层已移除连接级 advisory lock：事务使用 `SERIALIZABLE` 隔离级别及表行/范围锁，并仅 upsert 有变化的行。它仅保留为兼容诊断能力；MySQL 运行时的业务服务均使用按领域 Repository，不会整库加载或全量回写。
 

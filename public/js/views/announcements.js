@@ -10,9 +10,21 @@ import {
 } from './shared.js';
 
 const SEVERITY_LABELS = { info: '提示', warning: '警告', critical: '重要' };
+// 花落 / MIT：与服务端 ANNOUNCEMENT_PLACEMENTS 一一对应。缺省 both 覆盖历史公告
+// （payload 里没有这个键），所以未知取值也按 both 显示，不留空白胶囊。
+const PLACEMENT_LABELS = { both: '全部页面', gate: '仅验证页', app: '仅软件内' };
 
 function severityLabel(severity) {
   return SEVERITY_LABELS[severity] || severity;
+}
+
+function placementChip(announcement) {
+  const placement = PLACEMENT_LABELS[announcement.placement] ? announcement.placement : 'both';
+  // 只用 assets/icons.svg 里已有的 symbol；icon() 对未知名字会退化成 alert-triangle。
+  const iconName = placement === 'gate'
+    ? 'key-round'
+    : placement === 'app' ? 'monitor-smartphone' : 'boxes';
+  return `<span class="announcement-placement ${placement}">${icon(iconName)}${escapeHtml(PLACEMENT_LABELS[placement])}</span>`;
 }
 
 /**
@@ -46,6 +58,7 @@ function announcementCard(announcement) {
       <div class="announcement-meta">
         <span class="announcement-sequence">#${announcement.sequence}</span>
         <span class="announcement-severity ${severity}">${escapeHtml(severityLabel(announcement.severity))}</span>
+        ${placementChip(announcement)}
         ${statusChip(announcement)}
       </div>
       <div class="inline-actions">${ownerActions}</div>

@@ -22,9 +22,38 @@ const OWNER_ROLES = [Roles.PLATFORM_ADMIN, Roles.MERCHANT_ADMIN];
 const SEVERITIES = ['info', 'warning', 'critical'];
 const STATUSES = ['draft', 'published'];
 
+/**
+ * 展示位置。决定一条公告进入哪条下发通道，与 status / 时间窗是相互独立的三层过滤。
+ *
+ * 花落 / MIT：两个取值直接对应客户端的两个页面，因为两条通道本来就只服务这两个场景——
+ *   gate = 通道 B（GET /client/apps/:appId/notices，免鉴权）→ 卡密验证页；
+ *   app  = 通道 A（activate / verify 的签名载荷）→ 激活后的软件内界面。
+ * 默认 both：历史公告的 payload 里没有这个键，读取侧一律按 both 解释，
+ * 升级服务端不会让任何已发布公告悄悄从某个页面消失。
+ */
+const PLACEMENTS = ['both', 'gate', 'app'];
+const DEFAULT_PLACEMENT = 'both';
+const PLACEMENT_CHANNELS = ['gate', 'app'];
+
+// 对外沿用带前缀的名字，避免调用方 import 到过于泛化的 PLACEMENTS。
+const ANNOUNCEMENT_PLACEMENTS = PLACEMENTS;
+const DEFAULT_ANNOUNCEMENT_PLACEMENT = DEFAULT_PLACEMENT;
+
 // 花落 / MIT：进入签名载荷的公告条数硬上限。载荷会挂在每一次 activate/verify 响应上，
 // 不设上限会让心跳响应随公告数量线性膨胀，也给了攻击者放大响应体的机会。
 const MAX_SIGNED_ANNOUNCEMENTS = 3;
+
+/** 历史公告缺少 placement 键，读取侧统一归一为 both，避免 undefined 流入签名载荷。*/
+function readPlacement(announcement) {
+  return PLACEMENTS.includes(announcement.placement)
+    ? announcement.placement
+    : DEFAULT_PLACEMENT;
+}
+
+function matchesChannel(announcement, channel) {
+  const placement = readPlacement(announcement);
+  return placement === DEFAULT_PLACEMENT || placement === channel;
+}
 
 function parseOptionalIsoDate(value, field) {
   const raw = optionalString(value, field, { min: 20, max: 40 });
@@ -56,6 +85,7 @@ function presentAnnouncement(announcement) {
     body: announcement.body,
     severity: announcement.severity,
     status: announcement.status,
+    placement: readPlacement(announcement),
     startsAt: announcement.startsAt ?? null,
     endsAt: announcement.endsAt ?? null,
     publishedAt: announcement.publishedAt ?? null,
@@ -67,6 +97,10 @@ function presentAnnouncement(announcement) {
 /**
  * 下发给客户端的公告投影。只保留展示必需字段，绝不包含 merchantId、
  * 内部状态或时间窗口等管理信息；这些字段会被程序私钥签名后下发到全部设备。
+ *
+ * 花落 / MIT：placement 也刻意不下发。它是「服务端决定这条公告出现在哪个页面」的
+ * 投放开关，过滤在服务端已经完成；把它塞进载荷只会让客户端多一个可以自行解释的
+ * 字段，且旧客户端的 native 形状校验并不认识它。
  */
 function presentSignedAnnouncement(announcement) {
   return {
@@ -98,6 +132,15 @@ function readAnnouncementInput(input, { partial = false } = {}) {
   }
   if (!partial || payload.severity !== undefined) {
     result.severity = requireEnum(payload.severity ?? 'info', 'severity', SEVERITIES);
+  }
+  // 花落 / MIT：创建时缺省为 both（与历史行为一致：两个页面都展示）。
+  // 部分更新时缺省为 undefined，才能区分「没有传这个字段」和「显式改回 both」。
+  if (!partial || payload.placement !== undefined) {
+    result.placement = requireEnum(
+      payload.placement ?? DEFAULT_PLACEMENT,
+      'placement',
+      PLACEMENTS,
+    );
   }
   if (!partial || payload.startsAt !== undefined) {
     result.startsAt = parseOptionalIsoDate(payload.startsAt, 'startsAt');
@@ -163,6 +206,7 @@ export class AnnouncementService {
         title: fields.title,
         body: fields.body,
         severity: fields.severity,
+        placement: fields.placement,
         status: 'draft',
         startsAt: fields.startsAt,
         endsAt: fields.endsAt,
@@ -177,7 +221,12 @@ export class AnnouncementService {
         action: 'announcement.create',
         resourceType: 'announcement',
         resourceId: announcementId,
-        metadata: { appId, severity: announcement.severity, sequence: nextSequence },
+        metadata: {
+          appId,
+          severity: announcement.severity,
+          placement: announcement.placement,
+          sequence: nextSequence,
+        },
       });
       return presentAnnouncement(announcement);
     });
@@ -259,14 +308,21 @@ export class AnnouncementService {
   }
 
   /**
-   * 取该程序当前可下发的公告，供签名载荷使用。只返回 published 且在时间窗内的条目，
-   * 按序号倒序取前 MAX_SIGNED_ANNOUNCEMENTS 条。该方法不做权限检查：调用方是已经
-   * 通过卡密会话校验的客户端路径，或公开的只读公告端点。
+   * 取该程序当前可下发的公告，供签名载荷使用。只返回 published、在时间窗内、
+   * 且 placement 命中本通道的条目，按序号倒序取前 MAX_SIGNED_ANNOUNCEMENTS 条。
+   * 该方法不做权限检查：调用方是已经通过卡密会话校验的客户端路径，或公开的只读公告端点。
+   *
+   * 花落 / MIT：条数上限在 placement 过滤「之后」才截取。若先截取再过滤，一批
+   * gate 公告会把 app 通道的名额吃光，管理员会看到「明明发布了却在软件内看不到」。
    */
-  static selectPublishable(state, appId, nowMilliseconds = Date.now()) {
+  static selectPublishable(state, appId, nowMilliseconds = Date.now(), channel = null) {
+    if (channel !== null && !PLACEMENT_CHANNELS.includes(channel)) {
+      throw new AppError('INVALID_INPUT', 'channel must be one of: gate, app', 400);
+    }
     return state.announcements
       .filter((item) => {
         if (item.appId !== appId || item.status !== 'published') return false;
+        if (channel !== null && !matchesChannel(item, channel)) return false;
         if (item.startsAt && Date.parse(item.startsAt) > nowMilliseconds) return false;
         if (item.endsAt && Date.parse(item.endsAt) <= nowMilliseconds) return false;
         return true;
@@ -276,16 +332,18 @@ export class AnnouncementService {
       .map(presentSignedAnnouncement);
   }
 
-  async listPublishable(appId, nowMilliseconds = Date.now()) {
+  async listPublishable(appId, nowMilliseconds = Date.now(), channel = null) {
     return this.store.read((state) => AnnouncementService.selectPublishable(
       state,
       appId,
       nowMilliseconds,
+      channel,
     ));
   }
 
   /**
    * 通道 B：未激活用户的公开公告端点。无需卡密会话，但仍返回程序 Ed25519 签名信封。
+   * 只下发 placement 命中 gate 的公告——这条通道唯一的消费者是卡密验证页。
    *
    * 花落 / MIT：这是本次改动唯一新增的未认证下发通道，安全边界必须写清楚——
    *   1. 载荷只含公告与版本策略，绝不含设备、会话、卡密或商户内部信息；
@@ -304,14 +362,32 @@ export class AnnouncementService {
       findMerchantOrThrow(state, application.merchantId, { requireActive: true });
       return {
         application,
-        announcements: AnnouncementService.selectPublishable(state, id, nowMilliseconds),
+        announcements: AnnouncementService.selectPublishable(
+          state,
+          id,
+          nowMilliseconds,
+          'gate',
+        ),
       };
     });
     const { application } = snapshot;
-    // 载荷内的 sequence 取本次下发公告的最大序号，供客户端做防回滚比较；
-    // 没有可下发公告时为 0，客户端据此清空本地展示而不触发回滚拒绝。
-    const highestSequence = snapshot.announcements
-      .reduce((highest, item) => Math.max(highest, item.sequence), 0);
+    /*
+     * 载荷内的 sequence 直接取程序上只增不减的 announcementSequence 计数器，供客户端
+     * 做防回滚比较。
+     *
+     * 花落 / MIT：这里刻意不用「本次下发公告的最大序号」。客户端 native 的判定是
+     * `sequence < 已持久化水位 → NOTICE_ROLLBACK`（整封拒收，连版本策略一起丢），
+     * 而下发集合是会缩小的：撤回发布、公告过期、删除，以及本次新增的把 placement
+     * 改成 app（不再在验证页展示）——任何一种都会让最大序号回落甚至变成 0，于是
+     * 一次完全合法的管理操作会把所有老客户端的公告通道永久打死。计数器只随创建
+     * 递增，既保留了「拒绝历史信封重放」的效果，又不会被内容变更拉低。
+     * 计数器只增不减也保证从旧语义升级过来是单调的：它必然 ≥ 任何已发布公告的序号，
+     * 也就 ≥ 客户端已存的水位，升级瞬间不会误判回滚。
+     */
+    const noticeSequence = Number.isSafeInteger(application.announcementSequence)
+      && application.announcementSequence > 0
+      ? application.announcementSequence
+      : 0;
     const privateKey = decryptText(
       this.rootSecret,
       `app-signing:${application.id}`,
@@ -322,7 +398,7 @@ export class AnnouncementService {
       protocolVersion: this.config.protocolVersion,
       appId: application.id,
       issuedAt: new Date(nowMilliseconds).toISOString(),
-      sequence: highestSequence,
+      sequence: noticeSequence,
       clientPolicy: {
         minVersionCode: Number.isSafeInteger(application.minVersionCode)
           ? application.minVersionCode
@@ -346,4 +422,9 @@ export class AnnouncementService {
   }
 }
 
-export { MAX_SIGNED_ANNOUNCEMENTS, presentSignedAnnouncement };
+export {
+  ANNOUNCEMENT_PLACEMENTS,
+  DEFAULT_ANNOUNCEMENT_PLACEMENT,
+  MAX_SIGNED_ANNOUNCEMENTS,
+  presentSignedAnnouncement,
+};

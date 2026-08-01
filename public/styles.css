@@ -1476,6 +1476,35 @@ dialog::backdrop {
   color: #C4612F;
 }
 
+/* 展示位置胶囊。刻意用中性灰蓝，避免和 severity（蓝/橙/红）抢视觉权重——
+   位置是投放开关，不是紧急程度。作者：花落｜MIT */
+.announcement-placement {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #F2F2F7;
+  color: #6B7280;
+}
+
+.announcement-placement.gate {
+  background: #EDEBFE;
+  color: #5B4BC4;
+}
+
+.announcement-placement.app {
+  background: #E6F4EA;
+  color: #2E7D5B;
+}
+
+.announcement-placement svg {
+  width: 14px;
+  height: 14px;
+}
+
 .announcement-status {
   display: inline-flex;
   align-items: center;

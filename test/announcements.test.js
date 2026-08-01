@@ -275,7 +275,7 @@ describe('AnnouncementService', () => {
     assert.equal(publishable[2].sequence, 3);
   });
 
-  test('publicNotice 返回程序签名信封，载荷包含 clientPolicy 与 announcements，sequence 取最大序号', async () => {
+  test('publicNotice 返回程序签名信封，载荷包含 clientPolicy 与 announcements，sequence 取程序单调计数器', async () => {
     await store.transaction((state) => {
       const app = state.applications.find((item) => item.id === appId);
       app.minVersionCode = 100;
@@ -332,6 +332,43 @@ describe('AnnouncementService', () => {
     assert.equal(payload.announcements.length, 0);
   });
 
+  /**
+   * 花落 / MIT：下发集合会缩小（撤回、过期、删除、改成 placement=app），
+   * 但 sequence 绝不能跟着回落——客户端 native 判定 `sequence < 持久化水位`
+   * 为 NOTICE_ROLLBACK 并整封拒收，会把公告与版本策略一起永久打死。
+   */
+  test('publicNotice 的 sequence 在公告被撤回或删除后不回落', async () => {
+    const a1 = await service.create(merchantAdmin, appId, {
+      title: '公告1',
+      body: '正文1',
+      severity: 'info',
+    });
+    await service.setStatus(merchantAdmin, a1.id, 'published');
+    const a2 = await service.create(merchantAdmin, appId, {
+      title: '公告2',
+      body: '正文2',
+      severity: 'info',
+    });
+    await service.setStatus(merchantAdmin, a2.id, 'published');
+
+    const before = await service.publicNotice(appId);
+    assert.equal(before.payload.sequence, 2);
+    assert.equal(before.payload.announcements.length, 2);
+
+    // 撤回最新一条：下发集合缩小到 1 条，但水位必须保持 2。
+    await service.setStatus(merchantAdmin, a2.id, 'draft');
+    const afterUnpublish = await service.publicNotice(appId);
+    assert.equal(afterUnpublish.payload.announcements.length, 1);
+    assert.equal(afterUnpublish.payload.sequence, 2);
+
+    // 删除全部公告：集合为空，水位仍保持 2。
+    await service.delete(merchantAdmin, a1.id);
+    await service.delete(merchantAdmin, a2.id);
+    const afterDelete = await service.publicNotice(appId);
+    assert.equal(afterDelete.payload.announcements.length, 0);
+    assert.equal(afterDelete.payload.sequence, 2);
+  });
+
   test('publicNotice 在 rootSecret/config 缺失时抛出 503', async () => {
     const serviceWithoutCrypto = new AnnouncementService(store);
 
@@ -356,5 +393,130 @@ describe('AnnouncementService', () => {
       state.applications.find((item) => item.id === appId).signingPublicKey,
     );
     assert.ok(verifySignedEnvelope(envelope, publicKey), 'signature must verify against public key');
+  });
+
+  /**
+   * placement 三层过滤：与 status、时间窗相互独立，决定公告进入哪条下发通道。
+   * gate = 通道 B（卡密验证页），app = 通道 A（激活后的软件内），both = 两条都进。
+   */
+  describe('placement 投放位置', () => {
+    async function publish(fields) {
+      const announcement = await service.create(merchantAdmin, appId, {
+        body: '正文',
+        severity: 'info',
+        ...fields,
+      });
+      await service.setStatus(merchantAdmin, announcement.id, 'published');
+      return announcement;
+    }
+
+    test('缺省 placement 为 both，历史公告（无该键）读取时也归一为 both', async () => {
+      const created = await service.create(merchantAdmin, appId, {
+        title: '缺省公告',
+        body: '正文',
+        severity: 'info',
+      });
+      assert.equal(created.placement, 'both');
+
+      // 模拟升级前写入的历史记录：payload 里根本没有 placement 键。
+      await store.transaction((state) => {
+        delete state.announcements.find((item) => item.id === created.id).placement;
+      });
+      const [listed] = await service.list(merchantAdmin, appId);
+      assert.equal(listed.placement, 'both');
+
+      await service.setStatus(merchantAdmin, created.id, 'published');
+      const gate = await service.listPublishable(appId, Date.now(), 'gate');
+      const app = await service.listPublishable(appId, Date.now(), 'app');
+      assert.equal(gate.length, 1);
+      assert.equal(app.length, 1);
+    });
+
+    test('placement=gate 只进验证页通道，placement=app 只进软件内通道，both 两条都进', async () => {
+      const gateOnly = await publish({ title: '仅验证页', placement: 'gate' });
+      const appOnly = await publish({ title: '仅软件内', placement: 'app' });
+      const both = await publish({ title: '全部页面', placement: 'both' });
+
+      const now = Date.now();
+      const gateIds = (await service.listPublishable(appId, now, 'gate')).map((item) => item.id);
+      const appIds = (await service.listPublishable(appId, now, 'app')).map((item) => item.id);
+
+      assert.deepEqual(gateIds.sort(), [both.id, gateOnly.id].sort());
+      assert.deepEqual(appIds.sort(), [appOnly.id, both.id].sort());
+
+      // channel = null 保持旧语义：不按 placement 过滤。
+      const all = await service.listPublishable(appId, now);
+      assert.equal(all.length, 3);
+    });
+
+    test('placement 过滤先于条数上限，一条通道不会被另一条通道的公告挤空', async () => {
+      for (let i = 1; i <= MAX_SIGNED_ANNOUNCEMENTS; i++) {
+        await publish({ title: `验证页公告 ${i}`, placement: 'gate' });
+      }
+      const appOnly = await publish({ title: '软件内公告', placement: 'app' });
+
+      const appList = await service.listPublishable(appId, Date.now(), 'app');
+      assert.equal(appList.length, 1);
+      assert.equal(appList[0].id, appOnly.id);
+
+      const gateList = await service.listPublishable(appId, Date.now(), 'gate');
+      assert.equal(gateList.length, MAX_SIGNED_ANNOUNCEMENTS);
+    });
+
+    test('publicNotice 只下发命中 gate 的公告', async () => {
+      const gateOnly = await publish({ title: '仅验证页', placement: 'gate' });
+      await publish({ title: '仅软件内', placement: 'app' });
+
+      const envelope = await service.publicNotice(appId);
+      const ids = envelope.payload.announcements.map((item) => item.id);
+      assert.deepEqual(ids, [gateOnly.id]);
+    });
+
+    test('下发载荷不包含 placement 字段（客户端不需要，旧 native 形状校验也不认识）', async () => {
+      await publish({ title: '仅验证页', placement: 'gate' });
+
+      const [signed] = await service.listPublishable(appId, Date.now(), 'gate');
+      assert.deepEqual(
+        Object.keys(signed).sort(),
+        ['body', 'id', 'publishedAt', 'sequence', 'severity', 'title'],
+      );
+    });
+
+    test('update 可以改 placement，未传该字段时保持原值', async () => {
+      const created = await service.create(merchantAdmin, appId, {
+        title: '待改投放',
+        body: '正文',
+        severity: 'info',
+        placement: 'gate',
+      });
+
+      const renamed = await service.update(merchantAdmin, created.id, { title: '改了标题' });
+      assert.equal(renamed.placement, 'gate');
+
+      const moved = await service.update(merchantAdmin, created.id, { placement: 'app' });
+      assert.equal(moved.placement, 'app');
+
+      const back = await service.update(merchantAdmin, created.id, { placement: 'both' });
+      assert.equal(back.placement, 'both');
+    });
+
+    test('非法 placement 取值被拒绝', async () => {
+      await assert.rejects(
+        () => service.create(merchantAdmin, appId, {
+          title: '非法投放',
+          body: '正文',
+          severity: 'info',
+          placement: 'gate-only',
+        }),
+        (err) => err instanceof AppError && err.code === 'INVALID_INPUT',
+      );
+    });
+
+    test('selectPublishable 的 channel 参数只接受 gate / app', async () => {
+      await assert.rejects(
+        () => service.listPublishable(appId, Date.now(), 'both'),
+        (err) => err instanceof AppError && err.code === 'INVALID_INPUT',
+      );
+    });
   });
 });
