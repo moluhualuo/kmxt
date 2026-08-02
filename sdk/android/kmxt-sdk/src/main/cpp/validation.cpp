@@ -380,8 +380,12 @@ std::string validate_model_lease_envelope(const std::string& envelope_json,
         || !integer_between(payload, "keyVersion", 1, 1000000)) {
         return failed("INVALID_RESPONSE");
     }
-    static const std::array<const char*, 6> formats = {
-        "onnx", "ncnn-param", "ncnn-bin", "tflite", "dlc", "bundle",
+    // 花落/MIT: 'so' / 'dex' 复用同一 AES-256-GCM + 租约协议，密文同样随 APK assets 打包。
+    // 必须与服务端 model-delivery-service.js 的 ARTIFACT_FORMATS 保持同步——服务端先加了
+    // 这两档而此处漏改，会让 .so/.dex 租约在信封校验阶段被拒成 INVALID_RESPONSE，
+    // 表层现象是「解密失败」，实际 decrypt 从未执行。
+    static const std::array<const char*, 8> formats = {
+        "onnx", "ncnn-param", "ncnn-bin", "tflite", "dlc", "bundle", "so", "dex",
     };
     const std::string format = payload.value("format", "");
     if (std::find(formats.begin(), formats.end(), format) == formats.end()

@@ -160,9 +160,16 @@ JSON 开发模式的 Nonce 与速率限制状态位于进程内存；MySQL 生�
   吊销后不再签发新租约，现有记录改为 revoked；吊销是服务端不可恢复终态。
 - `cleanup-sessions` 删除已到期模型租约，未到期 revoked 记录保留到签名
   `expiresAt`。吊销不能擦除已经交付到客户端进程内的 DEK，客户端仍必须按短租约到期时间失败关闭。
-- Android 客户端必须先验 Ed25519，再验请求 Nonce、公钥指纹、哈希与到期时间；
+- Android 客户端必须先验 Ed25519，再验请求 Nonce、公钥指纹、`format` 白名单、哈希与到期时间；
   app-specific SDK 在 native 生成 X25519 私钥并以一次性 handle 持有 DEK，Java/Kotlin
   不接收 DEK。通用客户端可缓存密文，但 ScreenYolo 策略禁止密文和明文落盘。
+- **`format` 白名单双端同步是硬约束**：native `validation.cpp` 的白名单与服务端
+  `model-delivery-service.js` 的 `ARTIFACT_FORMATS` 必须逐项一致。任何一端新增格式而另一端
+  漏改，都会让服务端正常签发的租约在客户端被拒成 `INVALID_RESPONSE`；由于失败发生在信封
+  校验阶段、`decrypt` 从未执行，表象会伪装成“解密失败”。新增格式时必须同时改两端并重建 AAR。
+- **`cipherSha256` 是密文版本的唯一判据**：同一明文重复加密会产生不同 nonce、不同密文，
+  但 `size` 完全相同。客户端 assets 里的 `.vmp` 若与登记时的密文不是同一份，
+  完整性校验必然失败；仅比对 `size` 无法发现这种漂移。重新加密后必须重新登记或同步资产。
 - 租约请求发生网络、解析、验签、解包失败或协程取消时，Kotlin 必须调用 native cancel
   擦除待处理 X25519 私钥。只有 `ModelLease` 成功交付调用方后才保留一次性 handle。
 - Native handle 的有效期不得超过已签名 `expiresAt`，并使用固定容量上限防止内存状态

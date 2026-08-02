@@ -160,6 +160,21 @@ Manifest 不包含 `contentKey`。明文 SHA-256 用于发布侧可重复构建�
 保留的失败密文如果确认服务端没有登记，应立即安全删除，因为 DEK 已清零，文件无法
 恢复使用。
 
+### 客户端运行期失败：两个易误判的坑
+
+发布链路成功、客户端仍拿不到租约时，先按下表分流，不要一上来就怀疑解密逻辑。
+两类失败都发生在 `decrypt` **之前**，表象却都酷似“解密失败”。
+
+| 客户端症状 | 真实原因 | 处置 |
+| --- | --- | --- |
+| `LicenseException` 携带 `code=INVALID_RESPONSE` | native `validation.cpp` 的 `format` 白名单缺该格式，与服务端 `ARTIFACT_FORMATS` 不同步 | 补齐 native 白名单并重建 AAR；务必清 `~/.gradle/caches/transforms-3` 下该 AAR 的解压产物，否则打包仍喂旧 `.so` |
+| 本地完整性校验报 `ciphertext hash mismatch`，且 `size` 两侧相同 | 同一明文被加密了两次，assets 里的密文与登记时的不是同一份 | 用登记对应的那份密文替换 assets，或按当前密文重新登记 `cipherSha256` |
+
+排查要点：**先让错误消息带上可定位字段再猜根因**。`LicenseException` 的 `code`/`serverCode`
+是公开字段，而 `message` 是固定文案；哈希不一致时也应把两侧值一并打出。缺了这些字段，
+两类故障看起来完全一样。另注意 `size` 相同只能说明明文未变，分辨不出密文版本，只有
+`cipherSha256` 可以。
+
 ## 安全要求与限制
 
 - DEK 只在发布进程内存和单次 HTTPS 请求体中短暂存在；工具在完成或失败时清零其

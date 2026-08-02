@@ -193,10 +193,18 @@ powershell -ExecutionPolicy Bypass -File scripts/test-native.ps1
 
 `requestModelLease(artifactId)` 需要已有 Keystore 加密会话。SDK 每次调用在 native 生成
 临时 X25519 密钥对和新的 Nonce；收到响应后在 C++ 依次检查 Ed25519、
-固定 `keyId/appId/artifactId`、原请求 Nonce、客户端公钥指纹、租约时间和
+固定 `keyId/appId/artifactId`、原请求 Nonce、客户端公钥指纹、`format` 白名单、租约时间和
 包裹算法，然后使用 HKDF-SHA256/AES-GCM 解出 32 字节 DEK 并保存为一次性 handle。
 HTTP、解析、验签、解包等任意失败以及协程取消都会调用 native cancel，立即擦除尚未
 消费的 X25519 私钥和请求 Nonce；只有成功交付 `ModelLease` 时才保留其 handle。
+
+> **`format` 白名单必须与服务端同步。** native 侧白名单在
+> `sdk/android/kmxt-sdk/src/main/cpp/validation.cpp` 的 `validate_model_lease_envelope`
+> 内，当前为 `onnx`/`ncnn-param`/`ncnn-bin`/`tflite`/`dlc`/`bundle`/`so`/`dex`，须与
+> `src/services/model-delivery-service.js` 的 `ARTIFACT_FORMATS` 逐项一致。服务端新增格式
+> 而 native 漏改时，服务端会正常签发租约，但客户端在信封校验阶段拒成 `INVALID_RESPONSE` —— 
+> 此时 `decrypt` 尚未执行，故障表象酷似“解密失败”，极易误导排查方向。
+> `so`/`dex` 两档即因此曾漏同步。
 
 `ModelLease` 不暴露 `contentKey`；`decrypt()` 消费 native handle，调用方仍必须在
 `finally` 中执行 `wipe()` 清理未使用 handle；不得写入 SharedPreferences、数据库、日志或缓存。
