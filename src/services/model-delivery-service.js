@@ -25,7 +25,8 @@ import {
 } from './access-control.js';
 import { AuditService } from './audit-service.js';
 
-const ARTIFACT_FORMATS = ['onnx', 'ncnn-param', 'ncnn-bin', 'tflite', 'dlc', 'bundle'];
+// 花落/MIT: 'so' / 'dex' 复用同一 AES-256-GCM + 租约协议，密文同样随 APK assets 打包。
+const ARTIFACT_FORMATS = ['onnx', 'ncnn-param', 'ncnn-bin', 'tflite', 'dlc', 'bundle', 'so', 'dex'];
 const ARTIFACT_STATUSES = ['draft', 'active', 'revoked'];
 const HEX_SHA256 = /^[a-f0-9]{64}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;

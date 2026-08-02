@@ -86,6 +86,8 @@ function inferFormat(filename) {
   if (lower.endsWith('.bin')) return 'ncnn-bin';
   if (lower.endsWith('.tflite')) return 'tflite';
   if (lower.endsWith('.dlc')) return 'dlc';
+  if (lower.endsWith('.so')) return 'so';
+  if (lower.endsWith('.dex')) return 'dex';
   return 'onnx';  // 默认
 }
 
