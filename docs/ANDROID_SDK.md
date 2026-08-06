@@ -129,6 +129,8 @@ client.clearSession()
 - `clientPolicy.latestVersionCode/latestVersionName/releaseNotes`：建议更新信息
 - `announcements`：当前有效的系统公告列表（最多 3 条，按序号倒序）
 
+两条通道下发的公告集合由服务端按每条公告的展示位置（`placement`）分别过滤，SDK 侧无需任何处理：管理员把公告设为「仅软件内」时，`fetchNotices()`（卡密验证页）拿不到它，`activate`/`verify` 的授权响应里才有；设为「仅验证页」则相反。`placement` 本身不出现在签名载荷中，`Announcement` 数据类也不含该字段。
+
 未激活用户可通过 `fetchNotices(appId)` 从独立公开端点获取相同内容：
 
 ```kotlin

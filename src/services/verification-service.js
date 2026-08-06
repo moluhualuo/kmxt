@@ -428,7 +428,9 @@ export class VerificationService {
   async #publishableAnnouncements(appId, nowMilliseconds) {
     if (!this.announcements) return [];
     try {
-      return await this.announcements.listPublishable(appId, nowMilliseconds);
+      // 通道 A 只服务已激活客户端的软件内界面，因此只取 placement 命中 app 的公告。
+      // 卡密验证页专属公告（placement=gate）不进这条载荷。
+      return await this.announcements.listPublishable(appId, nowMilliseconds, 'app');
     } catch {
       // 公告是纯展示信息，读取失败绝不能连带拖垮授权验证。
       return [];

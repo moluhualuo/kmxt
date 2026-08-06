@@ -19,7 +19,7 @@ export function registerRoutes(router, services) {
   router.add('GET', '/health', { rateLimit: ADMIN_LIMIT }, async () => ({
     status: 'ok',
     service: 'kmxt-license-server',
-    version: '0.7.2',
+    version: '0.7.3',
     time: new Date().toISOString(),
   }));
   router.add('GET', '/ready', { rateLimit: ADMIN_LIMIT }, async () => ({ status: 'ready', checks: await services.readiness.check() }));

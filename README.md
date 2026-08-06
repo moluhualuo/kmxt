@@ -1,6 +1,6 @@
 # KMXT 卡密验证服务
 
-KMXT 是一个使用 Node.js 20 开发的多租户卡密服务。当前版本 `0.7.2` 支持 MySQL 8 + Redis 生产存储、Android NDK SDK 和设备绑定的加密模型租约。平台可创建多个商户，每个商户可管理多个独立程序；卡密、设备、签名密钥和日志均按 `merchantId` 与 `appId` 隔离。
+KMXT 是一个使用 Node.js 20 开发的多租户卡密服务。当前版本 `0.7.3` 支持 MySQL 8 + Redis 生产存储、Android NDK SDK 和设备绑定的加密模型租约。平台可创建多个商户，每个商户可管理多个独立程序；卡密、设备、签名密钥和日志均按 `merchantId` 与 `appId` 隔离。
 
 作者：花落  
 许可证：MIT
