@@ -5,6 +5,27 @@ import { readRequiredSecretFile, readRequiredTextFile } from './secret-file.js';
 
 const migrationsDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../migrations');
 
+function withTimeout(sql, timeout) {
+  return typeof sql === 'string'
+    ? { sql, timeout }
+    : { ...sql, timeout: sql.timeout ?? timeout };
+}
+
+function installOperationTimeouts(connection, timeout) {
+  for (const methodName of ['query', 'execute']) {
+    const original = connection[methodName].bind(connection);
+    connection[methodName] = (sql, values) => original(withTimeout(sql, timeout), values);
+  }
+  const transactionStatements = {
+    beginTransaction: 'START TRANSACTION',
+    commit: 'COMMIT',
+    rollback: 'ROLLBACK',
+  };
+  for (const [methodName, sql] of Object.entries(transactionStatements)) {
+    connection[methodName] = () => connection.query(sql);
+  }
+}
+
 export async function mysqlConnectionOptions(config, { multipleStatements = false } = {}) {
   const password = await readRequiredSecretFile(config.mysql.passwordFile, 'MySQL password');
   const options = {
@@ -15,6 +36,7 @@ export async function mysqlConnectionOptions(config, { multipleStatements = fals
     database: config.mysql.database,
     charset: 'utf8mb4',
     timezone: 'Z',
+    connectTimeout: config.mysql.operationTimeoutMs,
     multipleStatements,
   };
   if (config.mysql.tlsMode !== 'disabled') {
@@ -29,6 +51,7 @@ export async function runMigrations(config) {
   const connection = await mysql.createConnection(await mysqlConnectionOptions(config, {
     multipleStatements: true,
   }));
+  installOperationTimeouts(connection, config.mysql.operationTimeoutMs);
   try {
     await connection.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
       version VARCHAR(100) PRIMARY KEY,

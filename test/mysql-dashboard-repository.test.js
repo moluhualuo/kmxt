@@ -682,3 +682,69 @@ test('MySQL status summary uses metadata and count queries instead of loading st
   });
   assert.equal(calls.some((sql) => /payload/.test(sql)), false);
 });
+
+test('MySQL connection acquisition times out and releases a late connection', async () => {
+  let releaseConnection;
+  let releases = 0;
+  const store = new MysqlStore({ mysql: { operationTimeoutMs: 10 } });
+  store.pool = {
+    getConnection() {
+      return new Promise((resolve) => { releaseConnection = resolve; });
+    },
+  };
+
+  await assert.rejects(store.getConnection(), (error) => (
+    error.code === 'STORAGE_UNAVAILABLE'
+    && error.cause?.code === 'POOL_ACQUIRE_TIMEOUT'
+  ));
+  releaseConnection({ release() { releases += 1; } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(releases, 1);
+});
+
+test('MySQL store close is idempotent and blocks new queries before ending the pool', async () => {
+  let endCalls = 0;
+  let finishClose;
+  const store = new MysqlStore({ mysql: { operationTimeoutMs: 10 } });
+  store.pool = {
+    end() {
+      endCalls += 1;
+      return new Promise((resolve) => { finishClose = resolve; });
+    },
+  };
+  store.database = {};
+
+  const firstClose = store.close();
+  const secondClose = store.close();
+  await assert.rejects(store.ping(), (error) => error.code === 'STORAGE_UNAVAILABLE');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(endCalls, 1);
+  finishClose();
+  await Promise.all([firstClose, secondClose]);
+});
+
+test('MySQL query timeout destroys the connection before it can return to the pool', async () => {
+  let destroys = 0;
+  const timeoutError = new Error('Query inactivity timeout');
+  timeoutError.code = 'PROTOCOL_SEQUENCE_TIMEOUT';
+  const connection = {
+    async query() { throw timeoutError; },
+    async execute() { throw timeoutError; },
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    release() {},
+    destroy() { destroys += 1; },
+  };
+  const store = new MysqlStore({ mysql: { operationTimeoutMs: 10 } });
+  store.pool = { async getConnection() { return connection; } };
+
+  const acquired = await store.getConnection();
+  await assert.rejects(acquired.query('SELECT 1'), (error) => (
+    error.code === 'STORAGE_UNAVAILABLE'
+    && error.cause === timeoutError
+  ));
+
+  assert.equal(destroys, 1);
+});

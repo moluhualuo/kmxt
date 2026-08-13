@@ -27,7 +27,8 @@ export function deviceLimitText(value) {
 
 export function pageHeader(title, subtitle, actions = '') {
   return `<header class="page-header">
-    <div>
+    <div class="page-heading">
+      <span class="eyebrow">控制台 / ${escapeHtml(title)}</span>
       <h1>${escapeHtml(title)}</h1>
       <p>${escapeHtml(subtitle)}</p>
     </div>

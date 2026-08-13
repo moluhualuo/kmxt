@@ -88,6 +88,11 @@ node cli/publish-model-artifact.js `
 ncnn 的 `.param` 与 `.bin` 应分别发布为两个 artifact，使用不同 DEK。客户端映射
 也应引用两个独立 artifact ID，避免一个文件泄露后扩大影响范围。
 
+因为两者共用 `(appId, name, version)` 唯一键，制品名必须能区分。后台批量上传对
+`.param`/`.bin` 保留完整文件名（如 `CF_INT8_192.ncnn.param`）；用发布 CLI 时若
+显式传 `--name`，也要为两个文件给出不同名称，否则第二个文件会返回
+`409 ARTIFACT_EXISTS`。
+
 ## 执行流程
 
 ```text

@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     image: kmxt-license-server:0.7.2
     restart: unless-stopped
+    stop_grace_period: 30s
     env_file: ./production.env
     ports:
       - "127.0.0.1:8082:8080"
@@ -21,7 +22,7 @@ services:
       kmxt:
         ipv4_address: 172.28.52.10
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

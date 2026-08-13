@@ -42,6 +42,8 @@ npm start
 GET http://127.0.0.1:8080/health
 ```
 
+生产部署完成后请额外检查 `GET /ready`；该端点会验证 MySQL 和共享安全状态，连接池不可用时返回 `503` 并将容器标记为 unhealthy，由外部 supervisor/编排器负责重启。
+
 管理后台地址：
 
 ```text

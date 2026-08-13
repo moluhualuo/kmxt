@@ -8,5 +8,16 @@ export async function createStore(config) {
     ? new MysqlStore(config)
     : new JsonStore(config.dataFile);
   assertStoreContract(store);
-  return store.initialize();
+  try {
+    return await store.initialize();
+  } catch (error) {
+    try {
+      await store.close();
+    } catch (closeError) {
+      if (error && typeof error === 'object' && error.cause === undefined) {
+        error.cause = closeError;
+      }
+    }
+    throw error;
+  }
 }

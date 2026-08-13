@@ -61,6 +61,7 @@ export function loadConfig(overrides = {}) {
     modelLeaseTtlSeconds: readInteger('KMXT_MODEL_LEASE_TTL_SECONDS', 600, 60),
     modelLeaseMaxTtlSeconds: readInteger('KMXT_MODEL_LEASE_MAX_TTL_SECONDS', 900, 60),
     modelArtifactMaxBytes: readInteger('KMXT_MODEL_ARTIFACT_MAX_BYTES', 2 * 1024 * 1024 * 1024, 1),
+    shutdownTimeoutMs: readInteger('KMXT_SHUTDOWN_TIMEOUT_MS', 10_000, 0),
     trustedProxyCidrs: (process.env.KMXT_TRUSTED_PROXY_CIDRS || '')
       .split(',').map((value) => value.trim()).filter(Boolean),
     mysql: {
@@ -72,6 +73,8 @@ export function loadConfig(overrides = {}) {
       tlsCaFile: optionalPath(process.env.KMXT_MYSQL_TLS_CA_FILE),
       tlsMode: readEnum('KMXT_MYSQL_TLS_MODE', 'verify_identity', ['verify_identity', 'disabled']),
       poolLimit: readInteger('KMXT_MYSQL_POOL_LIMIT', 10),
+      poolQueueLimit: readInteger('KMXT_MYSQL_POOL_QUEUE_LIMIT', 100, 0),
+      operationTimeoutMs: readInteger('KMXT_MYSQL_OPERATION_TIMEOUT_MS', 8_000),
       autoMigrate: readBoolean('KMXT_MYSQL_AUTO_MIGRATE', false),
     },
     redis: {

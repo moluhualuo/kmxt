@@ -13,6 +13,7 @@ import { MysqlAuditRepository } from './repositories/mysql-audit-repository.js';
 import { MysqlMaintenanceRepository } from './repositories/mysql-maintenance-repository.js';
 import { MysqlOnlineDeviceRepository } from './repositories/mysql-online-device-repository.js';
 import { MysqlModelDeliveryRepository } from './repositories/mysql-model-delivery-repository.js';
+import { StorageUnavailableError, toStorageUnavailableError } from './storage-error.js';
 
 const TABLES = [
   ['merchants', 'merchants'],
@@ -90,6 +91,16 @@ function toIso(value) {
   return normalized.endsWith('Z') ? normalized : `${normalized}Z`;
 }
 
+async function rollbackQuietly(connection, originalError) {
+  try {
+    await connection.rollback();
+  } catch (rollbackError) {
+    if (originalError && typeof originalError === 'object' && originalError.cause === undefined) {
+      originalError.cause = rollbackError;
+    }
+  }
+}
+
 // Author: 花落. MySQL persistence is distributed under the MIT License.
 // Legacy StateStore transactions use SERIALIZABLE row/range locks until every service has
 // moved to its domain repository. There is intentionally no connection-scoped advisory lock.
@@ -98,7 +109,10 @@ export class MysqlStore extends StateStore {
     super();
     this.config = config;
     this.pool = null;
+    this.database = null;
     this.repositories = null;
+    this.closed = false;
+    this.closePromise = null;
   }
 
   async initialize() {
@@ -108,32 +122,37 @@ export class MysqlStore extends StateStore {
       ...await mysqlConnectionOptions(this.config),
       connectionLimit: this.config.mysql.poolLimit,
       waitForConnections: true,
-      queueLimit: 0,
+      queueLimit: this.config.mysql.poolQueueLimit,
+      connectTimeout: this.config.mysql.operationTimeoutMs,
       enableKeepAlive: true,
     });
-    await this.pool.query('SELECT 1');
-    const modelDelivery = new MysqlModelDeliveryRepository(this.pool);
+    this.database = this.#createRepositoryClient();
+    this.closed = false;
+    this.closePromise = null;
+    await this.database.query('SELECT 1');
+    const modelDelivery = new MysqlModelDeliveryRepository(this.database);
     this.repositories = {
-      dashboard: new MysqlDashboardRepository(this.pool),
-      orders: new MysqlOrderRepository(this.pool),
-      verification: new MysqlVerificationRepository(this.pool),
-      licenses: new MysqlLicenseRepository(this.pool),
-      auth: new MysqlAuthRepository(this.pool),
-      merchants: new MysqlMerchantRepository(this.pool),
-      applications: new MysqlApplicationRepository(this.pool),
-      products: new MysqlProductRepository(this.pool),
-      audit: new MysqlAuditRepository(this.pool),
-      maintenance: new MysqlMaintenanceRepository(this.pool, modelDelivery),
-      onlineDevices: new MysqlOnlineDeviceRepository(this.pool),
+      dashboard: new MysqlDashboardRepository(this.database),
+      orders: new MysqlOrderRepository(this.database),
+      verification: new MysqlVerificationRepository(this.database),
+      licenses: new MysqlLicenseRepository(this.database),
+      auth: new MysqlAuthRepository(this.database),
+      merchants: new MysqlMerchantRepository(this.database),
+      applications: new MysqlApplicationRepository(this.database),
+      products: new MysqlProductRepository(this.database),
+      audit: new MysqlAuditRepository(this.database),
+      maintenance: new MysqlMaintenanceRepository(this.database, modelDelivery),
+      onlineDevices: new MysqlOnlineDeviceRepository(this.database),
       modelDelivery,
     };
-    const [metaRows] = await this.pool.query('SELECT schema_version FROM kmxt_meta WHERE singleton_id = 1');
+    const [metaRows] = await this.database.query('SELECT schema_version FROM kmxt_meta WHERE singleton_id = 1');
     if (!metaRows.length) throw new Error('MySQL schema is not initialized; run `node cli/kmxt.js migrate`');
     return this;
   }
 
   async read(selector = (state) => state) {
-    const connection = await this.pool.getConnection();
+    this.#assertOpen();
+    const connection = await this.getConnection();
     try {
       await connection.beginTransaction();
       const state = await this.#load(connection, false);
@@ -141,7 +160,7 @@ export class MysqlStore extends StateStore {
       await connection.commit();
       return clone(result);
     } catch (error) {
-      await connection.rollback();
+      await rollbackQuietly(connection, error);
       throw error;
     } finally {
       connection.release();
@@ -149,7 +168,8 @@ export class MysqlStore extends StateStore {
   }
 
   async transaction(mutator) {
-    const connection = await this.pool.getConnection();
+    this.#assertOpen();
+    const connection = await this.getConnection();
     try {
       await connection.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
       await connection.beginTransaction();
@@ -162,7 +182,7 @@ export class MysqlStore extends StateStore {
       await connection.commit();
       return clone(result);
     } catch (error) {
-      await connection.rollback();
+      await rollbackQuietly(connection, error);
       throw error;
     } finally {
       connection.release();
@@ -220,25 +240,51 @@ export class MysqlStore extends StateStore {
   }
 
   async close() {
-    if (this.pool) await this.pool.end();
+    if (this.closePromise) return this.closePromise;
+    if (!this.pool) {
+      this.closed = true;
+      this.database = null;
+      return;
+    }
+    this.closed = true;
+    this.database = null;
+    this.closePromise = Promise.resolve().then(() => this.pool.end());
+    return this.closePromise;
   }
 
 
   async ping() {
-    await this.pool.query('SELECT 1');
-    return true;
+    this.#assertOpen();
+    try {
+      await (this.database || this.#createRepositoryClient()).query('SELECT 1');
+      return true;
+    } catch (error) {
+      throw toStorageUnavailableError(error);
+    }
   }
 
   async statusSummary() {
-    const [[meta], ...counts] = await Promise.all([
-      this.pool.execute('SELECT schema_version, updated_at FROM kmxt_meta WHERE singleton_id = 1'),
-      this.pool.execute('SELECT COUNT(*) AS total FROM merchants'),
-      this.pool.execute('SELECT COUNT(*) AS total FROM applications'),
-      this.pool.execute('SELECT COUNT(*) AS total FROM products'),
-      this.pool.execute('SELECT COUNT(*) AS total FROM orders'),
-      this.pool.execute('SELECT COUNT(*) AS total FROM licenses'),
-      this.pool.execute('SELECT COUNT(*) AS total FROM users'),
-    ]);
+    if (!this.pool || this.closed) {
+      throw new StorageUnavailableError('MySQL connection pool is closed');
+    }
+    let results;
+    const execute = this.database?.execute
+      ? this.database.execute.bind(this.database)
+      : this.pool.execute.bind(this.pool);
+    try {
+      results = await Promise.all([
+        execute('SELECT schema_version, updated_at FROM kmxt_meta WHERE singleton_id = 1'),
+        execute('SELECT COUNT(*) AS total FROM merchants'),
+        execute('SELECT COUNT(*) AS total FROM applications'),
+        execute('SELECT COUNT(*) AS total FROM products'),
+        execute('SELECT COUNT(*) AS total FROM orders'),
+        execute('SELECT COUNT(*) AS total FROM licenses'),
+        execute('SELECT COUNT(*) AS total FROM users'),
+      ]);
+    } catch (error) {
+      throw toStorageUnavailableError(error);
+    }
+    const [[meta], ...counts] = results;
     if (!meta[0]) throw new Error('MySQL schema is not initialized; run `node cli/kmxt.js migrate`');
     return {
       schemaVersion: Number(meta[0].schema_version),
@@ -253,6 +299,102 @@ export class MysqlStore extends StateStore {
   }
 
   async dashboard(actor, filters) {
+    this.#assertOpen();
     return this.repositories.dashboard.get(actor, filters);
+  }
+
+  async getConnection() {
+    this.#assertOpen();
+    let timedOut = false;
+    let timer;
+    const pending = Promise.resolve()
+      .then(() => this.pool.getConnection())
+      .then((connection) => {
+        if (timedOut) {
+          connection.release();
+          throw new StorageUnavailableError('Timed out waiting for a MySQL connection');
+        }
+        return connection;
+      });
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        const error = new Error('Timed out waiting for a MySQL connection');
+        error.code = 'POOL_ACQUIRE_TIMEOUT';
+        reject(error);
+      }, this.config.mysql.operationTimeoutMs);
+    });
+    try {
+      const connection = await Promise.race([pending, timeout]);
+      clearTimeout(timer);
+      this.#installConnectionOperationTimeouts(connection);
+      return connection;
+    } catch (error) {
+      clearTimeout(timer);
+      timedOut = true;
+      pending.catch(() => undefined);
+      throw toStorageUnavailableError(error);
+    }
+  }
+
+  #assertOpen() {
+    if (!this.pool || this.closed) {
+      throw new StorageUnavailableError('MySQL connection pool is closed');
+    }
+  }
+
+  #installConnectionOperationTimeouts(connection) {
+    if (connection.__kmxtOperationTimeoutInstalled) return;
+    const timeout = this.config.mysql.operationTimeoutMs;
+    for (const methodName of ['query', 'execute']) {
+      const original = connection[methodName].bind(connection);
+      connection[methodName] = async (sql, values) => {
+        try {
+          if (typeof sql === 'string') {
+            return await original({ sql, timeout }, values);
+          }
+          return await original({ ...sql, timeout: sql.timeout ?? timeout }, values);
+        } catch (error) {
+          if (error?.code === 'PROTOCOL_SEQUENCE_TIMEOUT') {
+            connection.destroy?.();
+          }
+          throw toStorageUnavailableError(error);
+        }
+      };
+    }
+    const transactionStatements = {
+      beginTransaction: 'START TRANSACTION',
+      commit: 'COMMIT',
+      rollback: 'ROLLBACK',
+    };
+    for (const [methodName, sql] of Object.entries(transactionStatements)) {
+      connection[methodName] = () => connection.query({ sql, timeout });
+    }
+    Object.defineProperty(connection, '__kmxtOperationTimeoutInstalled', { value: true });
+  }
+
+  #createRepositoryClient() {
+    return {
+      query: (...args) => this.#runConnectionOperation('query', args),
+      execute: (...args) => this.#runConnectionOperation('execute', args),
+      getConnection: () => this.getConnection(),
+    };
+  }
+
+  async #runConnectionOperation(methodName, args) {
+    const connection = await this.getConnection();
+    try {
+      const [sql, values] = args;
+      return values === undefined
+        ? await connection[methodName](sql)
+        : await connection[methodName](sql, values);
+    } catch (error) {
+      if (error?.code === 'PROTOCOL_SEQUENCE_TIMEOUT') {
+        connection.destroy?.();
+      }
+      throw toStorageUnavailableError(error);
+    } finally {
+      connection.release();
+    }
   }
 }

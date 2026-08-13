@@ -36,18 +36,18 @@ struct TrustAnchor {
 constexpr std::array<TrustAnchor, 2> kTrustAnchors = {{
     {
         "com.example.screenyolo.free",
-        "1feda666-3115-42d4-a34f-7f5e65083530",
-        "7699e04d20295a6d",
+        "476682b1-8005-4f39-949c-afc87e0fc0f9",
+        "35690f5fa6e962d1",
         "-----BEGIN PUBLIC KEY-----\n"
-        "MCowBQYDK2VwAyEAQ26CDZnecN0+0xtV4ejO7UPnxdKqeXyQrRSnJG7tmRg=\n"
+        "MCowBQYDK2VwAyEAnwdAGnY/vcMYMtGBaXEIbRhkLn1IMH+i+azYm7uw3VM=\n"
         "-----END PUBLIC KEY-----\n",
     },
     {
         "com.example.screenyolo.paid",
-        "0ea4807a-39ce-4a5c-85ea-506f72dc8541",
-        "076f00b00287aea1",
+        "875a278e-514e-4942-a6a0-45836ca907f0",
+        "c6b4c79e720cb088",
         "-----BEGIN PUBLIC KEY-----\n"
-        "MCowBQYDK2VwAyEAkk1PMbfCtLvyTay5N4KaOc5UumdCvqWM/7V/Mr7Y2M8=\n"
+        "MCowBQYDK2VwAyEAHJiLx/7YCXt6VJ47GHYqCCJNmzb15lEPh2BnbdqNtQ8=\n"
         "-----END PUBLIC KEY-----\n",
     },
 }};

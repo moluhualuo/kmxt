@@ -10,4 +10,4 @@ if docker compose run --rm app node cli/kmxt.js status | grep -q '"users": 0'; t
     --display-name "平台管理员"
 fi
 docker compose up -d --build
-curl --fail --silent --show-error http://127.0.0.1:8082/health
+curl --fail --silent --show-error http://127.0.0.1:8082/ready

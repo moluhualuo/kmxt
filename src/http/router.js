@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../core/app-error.js';
 import { assertRole } from '../services/access-control.js';
+import { isStorageUnavailableError } from '../storage/storage-error.js';
 import { RateLimiter } from './rate-limiter.js';
 import { resolveClientIp } from './client-ip.js';
 
@@ -71,6 +72,7 @@ export class Router {
     this.config = options.config;
     this.routes = [];
     this.rateLimiter = new RateLimiter(options.securityState);
+    this.requestGate = options.requestGate || (() => true);
   }
 
   add(method, path, options, handler) {
@@ -89,13 +91,16 @@ export class Router {
     const startedAt = Date.now();
     let accessUser = null;
     this.#setCommonHeaders(request, responseStream, requestId);
-    if (request.method === 'OPTIONS') {
-      responseStream.writeHead(204);
-      responseStream.end();
-      return;
-    }
 
     try {
+      if (!this.requestGate()) {
+        throw new AppError('SERVER_SHUTTING_DOWN', 'Server is shutting down', 503);
+      }
+      if (request.method === 'OPTIONS') {
+        responseStream.writeHead(204);
+        responseStream.end();
+        return;
+      }
       const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
       const route = this.routes.find(
         (candidate) => candidate.method === request.method && candidate.expression.test(url.pathname),
@@ -152,7 +157,12 @@ export class Router {
       this.#logAccess(request, requestId, normalized.status, startedAt, accessUser);
     } catch (error) {
       this.#sendError(responseStream, error, requestId);
-      this.#logAccess(request, requestId, error instanceof AppError ? error.status : 500, startedAt, accessUser);
+      const responseStatus = isStorageUnavailableError(error)
+        ? 503
+        : error instanceof AppError
+          ? error.status
+          : 500;
+      this.#logAccess(request, requestId, responseStatus, startedAt, accessUser);
     }
   }
 
@@ -202,12 +212,17 @@ export class Router {
 
   #sendError(responseStream, error, requestId) {
     const knownError = error instanceof AppError;
-    if (!knownError) {
+    const storageUnavailable = isStorageUnavailableError(error);
+    if (!knownError && !storageUnavailable) {
       console.error(`[${requestId}]`, error);
     }
-    const status = knownError ? error.status : 500;
-    const code = knownError ? error.code : 'INTERNAL_ERROR';
-    const message = knownError ? error.message : 'An internal server error occurred';
+    const status = storageUnavailable ? 503 : knownError ? error.status : 500;
+    const code = storageUnavailable ? 'STORAGE_UNAVAILABLE' : knownError ? error.code : 'INTERNAL_ERROR';
+    const message = knownError
+      ? (storageUnavailable ? 'Storage service is temporarily unavailable' : error.message)
+      : storageUnavailable
+        ? 'Storage service is temporarily unavailable'
+        : 'An internal server error occurred';
     const payload = {
       success: false,
       error: {
@@ -219,7 +234,9 @@ export class Router {
     };
     const headers = status === 429 && error.details?.retryAfter
       ? { 'Retry-After': String(error.details.retryAfter) }
-      : {};
+      : storageUnavailable || code === 'SERVER_SHUTTING_DOWN'
+        ? { 'Retry-After': '5' }
+        : {};
     this.#sendJson(responseStream, status, payload, headers);
   }
 }

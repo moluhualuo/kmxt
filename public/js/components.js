@@ -1,4 +1,4 @@
-const STATUS_LABELS = Object.freeze({
+﻿const STATUS_LABELS = Object.freeze({
   active: '启用',
   pending: '未激活',
   disabled: '已禁用',
@@ -56,10 +56,12 @@ export function roleLabel(role) {
 
 export function emptyState(iconName, title, message, actionHtml = '') {
   return `<div class="empty-state">
-    ${icon(iconName)}
-    <h3>${escapeHtml(title)}</h3>
-    <p>${escapeHtml(message)}</p>
-    ${actionHtml}
+    <div class="empty-state-icon">${icon(iconName)}</div>
+    <div class="empty-state-copy">
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(message)}</p>
+    </div>
+    ${actionHtml ? `<div class="empty-state-action">${actionHtml}</div>` : ''}
   </div>`;
 }
 
@@ -69,7 +71,7 @@ export function pagination(data, actionPrefix) {
   const hasPrevious = data.page > 1;
   const hasNext = data.page * data.limit < data.total;
   return `<div class="pagination">
-    <span>第 ${from}-${to} 条，共 ${data.total} 条</span>
+    <span class="pagination-summary">显示 ${from}-${to} 条，共 ${data.total} 条</span>
     <div class="inline-actions">
       <button class="icon-button" type="button" data-action="${actionPrefix}-previous" ${hasPrevious ? '' : 'disabled'} aria-label="上一页" title="上一页">${icon('chevron-left')}</button>
       <button class="icon-button" type="button" data-action="${actionPrefix}-next" ${hasNext ? '' : 'disabled'} aria-label="下一页" title="下一页">${icon('chevron-right')}</button>

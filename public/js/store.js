@@ -1,4 +1,4 @@
-import {
+﻿import {
   escapeHtml,
   formatDate,
   icon,

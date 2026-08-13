@@ -43,8 +43,11 @@ cp deploy/backup.env.example deploy/backup.env
 cd /root/kmxt/deploy
 sh scripts/preflight.sh
 sh scripts/deploy.sh
-curl --fail http://127.0.0.1:8082/health
+curl --fail http://127.0.0.1:8082/ready
 ```
+
+应用收到 `SIGTERM` 时会先停止接收新请求、等待进行中的请求完成，再关闭 MySQL/Redis；Compose 的 `stop_grace_period` 为 30 秒，避免进程被强制终止后留下半关闭连接池。
+MySQL 连接池默认最多排队 100 个请求，获取连接和单次 SQL 操作默认 8 秒超时；存储不可用时 API 返回 `503 STORAGE_UNAVAILABLE`，不会再让请求无限等待。`/ready` 会同步返回 `503`，但普通 Docker Compose 不会仅因容器变为 `unhealthy` 自动重启，生产环境仍需外部 supervisor/watchdog 处理持续不可用实例。
 
 预检校验 secret、Compose、镜像构建、MySQL TLS 连接、SQL migration、Redis `PING` 和状态读取。`deploy.sh` 再执行 migration、创建全新平台管理员并启动应用。
 由于 app 服务使用固定容器 IP，服务已运行后不要再用 `docker compose run app ...` 做状态查询，否则临时容器会与运行中 app 的固定 IP 冲突；上线后的状态检查使用 `docker compose exec -T app node cli/kmxt.js status`。

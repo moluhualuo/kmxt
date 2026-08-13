@@ -134,12 +134,19 @@ if (command === 'serve') {
   const address = await runtime.listen();
   const visibleHost = address.address === '::' ? 'localhost' : address.address;
   console.log(`KMXT server listening at http://${visibleHost}:${address.port}`);
+  let closing = null;
   const close = async () => {
-    await runtime.close();
-    process.exit(0);
+    if (closing) return closing;
+    closing = runtime.close()
+      .then(() => { process.exitCode = 0; })
+      .catch((error) => {
+        console.error('Graceful shutdown failed:', error);
+        process.exitCode = 1;
+      });
+    return closing;
   };
-  process.on('SIGINT', close);
-  process.on('SIGTERM', close);
+  process.once('SIGINT', () => { void close(); });
+  process.once('SIGTERM', () => { void close(); });
 } else {
   usage();
   process.exitCode = 1;

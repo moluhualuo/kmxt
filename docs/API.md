@@ -998,7 +998,7 @@ DEK 和短期租约；大型模型优先使用本地发布 CLI，避免浏览器
 | --- | --- | --- |
 | `file` | 是 | 明文制品文件；后台支持 `.onnx`、`.param`、`.bin`、`.tflite`、`.dlc`、`.so` 和 `.dex`。 |
 | `appId` | 是 | 当前程序 UUID；商户范围仍由 Bearer 会话校验。 |
-| `name` | 否 | 制品名；省略时从文件名去除扩展名推断。 |
+| `name` | 否 | 制品名；省略时从文件名推断。`.onnx`/`.tflite`/`.dlc`/`.so`/`.dex`/`.pt`/`.pth` 去除扩展名；ncnn 的 `.param`/`.bin` **保留完整文件名**，以免 `X.ncnn.param` 与 `X.ncnn.bin` 塌缩同名后触发唯一键冲突。 |
 | `version` | 否 | 版本号，默认 `1.0`。 |
 | `format` | 否 | 制品格式；省略时从文件扩展名推断，最终仍受 artifact 格式白名单校验。 |
 | `edition` | 否 | 可选版本分层。 |
@@ -1031,6 +1031,11 @@ Router 会再包裹统一的 `{ "success": true, "data": ... }` 信封。明文�
 都不写入服务端磁盘；但当前实现会在内存中缓冲单个 multipart 文件，并把密文转换为
 Base64 JSON 响应，因此反向代理必须设置明确的上传上限和超时，大文件应使用本地发布 CLI。
 `KMXT_MODEL_ARTIFACT_MAX_BYTES` 在登记阶段限制最终密文字节数。
+
+批量上传时同一 `(appId, name, version)` 只能存在一条记录，重复登记返回
+`409 ARTIFACT_EXISTS`。管理页多选会按文件逐个调用本接口且共用同一 `version`，
+因此同批文件的推断名必须互不相同。重传同名同版本前需先删除或吊销旧制品，
+或显式传入不同的 `version`。
 
 ### `POST /api/v1/apps/:appId/artifacts`
 

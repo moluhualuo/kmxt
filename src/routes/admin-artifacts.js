@@ -79,7 +79,7 @@ function parseMultipart(request) {
 /**
  * 从文件名推断模型格式（.onnx / .param / .bin / .tflite）
  */
-function inferFormat(filename) {
+export function inferFormat(filename) {
   const lower = filename.toLowerCase();
   if (lower.endsWith('.onnx')) return 'onnx';
   if (lower.endsWith('.param')) return 'ncnn-param';
@@ -92,10 +92,16 @@ function inferFormat(filename) {
 }
 
 /**
- * 从文件名提取模型名称（去扩展名）
+ * 从文件名提取模型名称。
+ *
+ * 只剥离单一扩展名的格式（如 model.onnx -> model）；ncnn 的 `.param` / `.bin`
+ * 保留完整文件名，避免 `X.ncnn.param` 与 `X.ncnn.bin` 塌缩成同名而撞上
+ * uq_model_artifacts_version (app_id, name, version) 唯一键。ncnn 的两个文件
+ * 按设计本就是各自独立 DEK 的两个 artifact，名称必须可区分。
  */
-function inferName(filename) {
-  return filename.replace(/\.(onnx|param|bin|tflite|pt|pth)$/i, '');
+export function inferName(filename) {
+  if (/\.(param|bin)$/i.test(filename)) return filename;
+  return filename.replace(/\.(onnx|tflite|dlc|so|dex|pt|pth)$/i, '');
 }
 
 /**
