@@ -7,6 +7,8 @@
   showToast,
   statusBadge,
 } from './components.js';
+import { syncThemeControls, toggleTheme } from './theme.js';
+import { mountStoreJointNetwork } from './store-background.js';
 
 const appRoot = document.querySelector('#store-app');
 const merchantCode = decodeURIComponent(location.pathname.split('/').filter(Boolean).at(-1) || '').toUpperCase();
@@ -105,23 +107,50 @@ function setView(view) {
 
 function renderProducts() {
   const products = state.store.products;
-  const cards = products.map((product) => `<article class="product-card">
-    <span class="product-app">${escapeHtml(product.application.name)}</span>
-    <h2>${escapeHtml(product.name)}</h2>
-    <p class="product-description">${escapeHtml(product.description || '授权套餐')}</p>
-    <div class="product-price">${formatPrice(product.priceCents)}</div>
+  const cards = products.map((product, index) => `<article class="product-card${products.length === 1 ? ' single' : ''}" style="--card-index: ${index}">
+    <div class="product-card-head">
+      <span class="product-app">${icon('boxes')}<span>${escapeHtml(product.application.name)}</span></span>
+      <span class="product-kind">授权方案</span>
+    </div>
+    <div class="product-card-copy">
+      <h2>${escapeHtml(product.name)}</h2>
+      <p class="product-description">${escapeHtml(product.description || '适用于当前程序的授权套餐')}</p>
+    </div>
+    <div class="product-price-block">
+      <span>方案价格</span>
+      <div class="product-price">${formatPrice(product.priceCents)}</div>
+    </div>
     <ul class="product-facts">
-      <li>${icon('clock-3')}<span>激活后 ${product.durationDays} 天</span></li>
-      <li>${icon('monitor-smartphone')}<span>${deviceLimitText(product.maxDevices)}</span></li>
-      <li>${icon('package-check')}<span>商户审核后发放</span></li>
+      <li><span class="product-fact-icon">${icon('clock-3')}</span><span><small>授权时长</small><strong>激活后 ${product.durationDays} 天</strong></span></li>
+      <li><span class="product-fact-icon">${icon('monitor-smartphone')}</span><span><small>设备额度</small><strong>${deviceLimitText(product.maxDevices)}</strong></span></li>
+      <li><span class="product-fact-icon">${icon('shield-check')}</span><span><small>交付方式</small><strong>商户审核后发放</strong></span></li>
     </ul>
-    <button class="button" type="button" data-action="order-product" data-id="${escapeHtml(product.id)}">提交订单</button>
+    <button class="button product-order-button" type="button" data-action="order-product" data-id="${escapeHtml(product.id)}"><span>选择此方案</span>${icon('external-link')}</button>
   </article>`).join('');
-  return `<header class="store-page-header">
-      <div><h1>${escapeHtml(state.store.merchant.name)}</h1><p>授权套餐</p></div>
-      <span class="store-status">${icon('shield-check')}人工审核发放</span>
-    </header>
-    ${cards ? `<section class="product-grid" aria-label="套餐列表">${cards}</section>` : `<div class="store-empty">${icon('shopping-bag')}<h2>暂无可用套餐</h2></div>`}`;
+  return `<section class="store-hero" aria-labelledby="store-hero-title">
+      <div class="store-hero-copy">
+        <span class="store-eyebrow">${icon('shield-check')}官方授权店铺</span>
+        <h1 id="store-hero-title">选择适合你的授权方案</h1>
+        <p>透明查看授权时长与设备额度，提交后由 ${escapeHtml(state.store.merchant.name)} 审核并发放卡密。</p>
+        <div class="store-trust-row" aria-label="服务特点">
+          <span>${icon('circle-check')}信息清晰</span>
+          <span>${icon('shield-check')}人工复核</span>
+          <span>${icon('receipt-text')}订单可追踪</span>
+        </div>
+      </div>
+      <aside class="store-hero-summary" aria-label="店铺摘要">
+        <div><small>当前店铺</small><strong>${escapeHtml(state.store.merchant.name)}</strong></div>
+        <div><small>可选方案</small><strong>${products.length} 个</strong></div>
+        <div><small>发放方式</small><strong>审核后发放</strong></div>
+      </aside>
+    </section>
+    <section class="store-catalogue" aria-labelledby="catalogue-title">
+      <div class="store-section-heading">
+        <div><span class="store-section-kicker">LICENSE PLANS</span><h2 id="catalogue-title">授权套餐</h2><p>选择方案后填写联系方式，即可提交审核。</p></div>
+        <button class="button secondary small" type="button" data-store-view="orders">${icon('receipt-text')}查询已有订单</button>
+      </div>
+      ${cards ? `<div class="product-grid" aria-label="套餐列表">${cards}</div>` : `<div class="store-empty">${icon('shopping-bag')}<h2>暂无可用套餐</h2><p>商户暂未发布授权方案，请稍后再来。</p></div>`}
+    </section>`;
 }
 
 function renderOrderResult(order) {
@@ -148,7 +177,7 @@ function renderOrders() {
     <span><strong class="mono">${escapeHtml(order.orderNo)}</strong><small>${escapeHtml(order.productName)} · ${formatDate(order.createdAt)}</small></span>
     <button class="button secondary small" type="button" data-action="query-local-order" data-order-no="${escapeHtml(order.orderNo)}" data-query-code="${escapeHtml(order.queryCode)}">查询</button>
   </div>`).join('');
-  return `<header class="store-page-header"><div><h1>订单查询</h1><p>${escapeHtml(state.store.merchant.name)}</p></div></header>
+  return `<header class="store-page-header order-page-header"><div><span class="store-section-kicker">ORDER TRACKING</span><h1>订单查询</h1><p>使用订单号和查询码查看审核状态或领取卡密。</p></div><span class="store-status">${icon('shield-check')}${escapeHtml(state.store.merchant.name)}</span></header>
     <div class="order-layout">
       <section class="order-query-panel">
         <h2>查询凭证</h2>
@@ -273,7 +302,9 @@ document.addEventListener('click', async (event) => {
   }
   const button = event.target.closest('[data-action]');
   if (!button) return;
-  if (button.dataset.action === 'order-product') {
+  if (button.dataset.action === 'toggle-theme') {
+    toggleTheme();
+  } else if (button.dataset.action === 'order-product') {
     const product = state.store.products.find((item) => item.id === button.dataset.id);
     if (product) openOrderForm(product);
   } else if (button.dataset.action === 'query-local-order') {
@@ -324,4 +355,6 @@ async function bootstrap() {
   }
 }
 
+syncThemeControls();
+mountStoreJointNetwork(document.querySelector('[data-store-joint-network]'));
 bootstrap();

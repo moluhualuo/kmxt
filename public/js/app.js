@@ -30,6 +30,8 @@ import {
 
 import { store } from './state.js';
 
+import { syncThemeControls, toggleTheme } from './theme.js';
+
 import { renderOverviewView } from './views/overview.js';
 
 import { renderMerchantsView } from './views/merchants.js';
@@ -228,6 +230,8 @@ function renderLogin() {
 
     <section class="login-panel">
 
+      <button class="icon-button theme-toggle login-theme-toggle" type="button" data-action="toggle-theme" data-theme-toggle aria-label="切换到黑夜模式" title="切换到黑夜模式" aria-pressed="false">${icon('moon')}</button>
+
       <div class="login-brand">
 
         <span class="brand-accent" aria-hidden="true"></span>
@@ -294,6 +298,8 @@ function renderLogin() {
 
 
   document.querySelector('#login-form').addEventListener('submit', handleLogin);
+
+  syncThemeControls();
 
   initLoginParticles();
 
@@ -656,6 +662,8 @@ function renderShell() {
 
         </div>
 
+        <button class="icon-button theme-toggle" type="button" data-action="toggle-theme" data-theme-toggle aria-label="切换到黑夜模式" title="切换到黑夜模式" aria-pressed="false">${icon('moon')}</button>
+
         <button class="icon-button" type="button" data-action="refresh" aria-label="刷新当前页面" title="刷新">${icon('refresh-cw')}</button>
 
       </header>
@@ -667,6 +675,8 @@ function renderShell() {
     </div>
 
   </div>`;
+
+  syncThemeControls();
 
 }
 
@@ -2074,7 +2084,11 @@ document.addEventListener('click', async (event) => {
 
 
 
-  if (action === 'toggle-sidebar') {
+  if (action === 'toggle-theme') {
+
+    toggleTheme();
+
+  } else if (action === 'toggle-sidebar') {
 
     store.patch({ sidebarOpen: !store.value.sidebarOpen });
 

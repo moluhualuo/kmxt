@@ -11,6 +11,9 @@ param(
     [int]$Width = 1440,
     [ValidateRange(480, 2160)]
     [int]$Height = 900,
+    [ValidateSet('system', 'light', 'dark')]
+    [string]$Theme = 'system',
+    [string]$HoverSelector,
     [string]$Screenshot = '.runtime/ui-smoke.png'
 )
 
@@ -263,6 +266,65 @@ try {
         }
     }
 
+    if ($Theme -ne 'system') {
+        $themeJson = $Theme | ConvertTo-Json -Compress
+        $themeExpression = @"
+(() => {
+  const expected = $themeJson;
+  const button = document.querySelector('[data-theme-toggle]');
+  if (!button) return { error: 'toggle-missing' };
+  if (document.documentElement.dataset.theme !== expected) {
+    button.click();
+  } else if (localStorage.getItem('kmxt.theme') !== expected) {
+    button.click();
+    button.click();
+  }
+  return {
+    theme: document.documentElement.dataset.theme,
+    stored: localStorage.getItem('kmxt.theme'),
+    pressed: button.getAttribute('aria-pressed')
+  };
+})()
+"@
+        $themeResult = Invoke-CdpExpression -Socket $socket -Sequence ([ref]$sequence) -Expression $themeExpression
+        if ($themeResult.error -or $themeResult.theme -ne $Theme -or $themeResult.stored -ne $Theme) {
+            throw "Theme switch failed: expected $Theme."
+        }
+    }
+
+    $hoverState = $null
+    if (-not [string]::IsNullOrWhiteSpace($HoverSelector)) {
+        $hoverSelectorJson = $HoverSelector | ConvertTo-Json -Compress
+        $hoverRectExpression = @"
+(() => {
+  const element = document.querySelector($hoverSelectorJson);
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+})()
+"@
+        $hoverRect = Invoke-CdpExpression -Socket $socket -Sequence ([ref]$sequence) -Expression $hoverRectExpression
+        if (-not $hoverRect) {
+            throw "Hover target was not available: $HoverSelector"
+        }
+        $sequence += 1
+        $null = Send-CdpCommand -Socket $socket -Id $sequence -Method 'Input.dispatchMouseEvent' -Parameters @{
+            type = 'mouseMoved'
+            x = $hoverRect.x
+            y = $hoverRect.y
+        }
+        Start-Sleep -Milliseconds 250
+        $hoverStateExpression = @"
+(() => {
+  const element = document.querySelector($hoverSelectorJson);
+  if (!element) return null;
+  const style = getComputedStyle(element);
+  return { backgroundColor: style.backgroundColor, color: style.color };
+})()
+"@
+        $hoverState = Invoke-CdpExpression -Socket $socket -Sequence ([ref]$sequence) -Expression $hoverStateExpression
+    }
+
     Start-Sleep -Milliseconds 300
     $metricsExpression = @'
 JSON.stringify((() => {
@@ -279,7 +341,9 @@ JSON.stringify((() => {
     sidebar: rect('.sidebar'),
     topbar: rect('.topbar'),
     content: rect('#main-content') || rect('#store-main'),
-    pageTitle: document.querySelector('.page-header h1, .store-page-header h1, .store-error h1')?.textContent || null,
+    pageTitle: document.querySelector('.page-header h1, .store-hero h1, .store-page-header h1, .store-error h1')?.textContent || null,
+    theme: document.documentElement.dataset.theme || null,
+    storedTheme: localStorage.getItem('kmxt.theme'),
     openDialogs: document.querySelectorAll('dialog[open]').length,
     busy: Boolean(document.querySelector('#busy-bar')) && !document.querySelector('#busy-bar').hidden
   };
@@ -325,6 +389,7 @@ JSON.stringify((() => {
         Height = $Height
         Screenshot = $Screenshot
         Metrics = $metrics
+        Hover = $hoverState
     }
     $sequence += 1
     $null = Send-CdpCommand -Socket $socket -Id $sequence -Method 'Browser.close'

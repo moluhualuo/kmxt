@@ -295,7 +295,7 @@ test('multi-tenant license activation and verification workflow', async (context
 
   const storefrontPage = await fetch(`${baseUrl}/store/MERCHANT_A`);
   assert.equal(storefrontPage.status, 200);
-  assert.match(await storefrontPage.text(), /授权套餐/);
+  assert.match(await storefrontPage.text(), /选择套餐/);
   const publicStore = await request(baseUrl, 'GET', '/api/v1/store/MERCHANT_A');
   assert.equal(publicStore.status, 200);
   assert.equal(publicStore.payload.data.products.length, 1);

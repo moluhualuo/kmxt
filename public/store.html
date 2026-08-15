@@ -3,25 +3,32 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#0f6b4d">
   <title>授权店铺</title>
+  <script src="/admin/js/theme-init.js"></script>
   <link rel="icon" href="/admin/assets/brand.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/admin/styles.css">
   <link rel="stylesheet" href="/admin/store.css">
 </head>
 <body class="store-body">
   <a class="skip-link" href="#store-main">跳到主要内容</a>
+  <canvas class="store-joint-network" data-store-joint-network aria-hidden="true"></canvas>
   <header class="store-header">
     <div class="store-header-inner">
       <a class="store-brand" href="#products" aria-label="返回店铺列表">
         <img src="/admin/assets/brand.svg" width="38" height="38" alt="">
         <span><strong id="store-name">授权店铺</strong><small id="store-code">KMXT</small></span>
       </a>
-      <nav class="store-tabs" aria-label="店铺导航">
-        <button class="store-tab active" type="button" data-store-view="products">选择套餐</button>
-        <button class="store-tab" type="button" data-store-view="orders">订单查询</button>
-      </nav>
+      <div class="store-header-actions">
+        <nav class="store-tabs" aria-label="店铺导航">
+          <button class="store-tab active" type="button" data-store-view="products">选择套餐</button>
+          <button class="store-tab" type="button" data-store-view="orders">订单查询</button>
+        </nav>
+        <button class="icon-button theme-toggle" type="button" data-action="toggle-theme" data-theme-toggle aria-label="切换到黑夜模式" title="切换到黑夜模式" aria-pressed="false">
+          <svg class="icon" aria-hidden="true"><use href="/admin/assets/icons.svg#moon"></use></svg>
+        </button>
+      </div>
     </div>
   </header>
   <main class="store-main" id="store-main">
