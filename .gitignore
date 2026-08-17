@@ -18,3 +18,10 @@ sdk/android/build/
 sdk/android/**/build/
 sdk/android/**/.cxx/
 sdk/android/third_party/
+
+# Local development artifacts
+.agents/
+.workbuddy/
+old_ui.patch
+public/styles_original.css
+shots/
